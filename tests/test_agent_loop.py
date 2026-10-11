@@ -380,7 +380,9 @@ def _agent_outcome_event(event_id: int) -> Event:
 def _held_contents(provider: FakeProvider, call_index: int) -> list[str]:
     """The tool-result texts the model saw before its Nth completion."""
     return [
-        b.content for m in provider.calls[call_index][1] for b in m.blocks
+        b.content
+        for m in provider.calls[call_index][1]
+        for b in m.blocks
         if isinstance(b, ToolResult)
     ]
 

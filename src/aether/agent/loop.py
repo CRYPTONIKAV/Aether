@@ -1614,10 +1614,7 @@ class AgentLoop:
             result = ToolResult(
                 tool_call_id=call.id,
                 name=call.name,
-                content=(
-                    f"already settled — {settled[call.name]}. "
-                    "Do not propose it again."
-                ),
+                content=(f"already settled — {settled[call.name]}. Do not propose it again."),
             )
             self._note_call(trace, call, result, ruling=ruling)
             return result
