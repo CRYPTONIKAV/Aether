@@ -6,8 +6,10 @@ from __future__ import annotations
 import logging
 
 from ..config import AppConfig, Settings
+from .attachments import AttachmentProcessor
 from .base import (
     ApprovalDecider,
+    Attachment,
     ConnectorUnavailableError,
     DecisionCallback,
     InboundHandler,
@@ -23,6 +25,8 @@ log = logging.getLogger("aether.connectors")
 
 __all__ = [
     "ApprovalDecider",
+    "Attachment",
+    "AttachmentProcessor",
     "ConnectorUnavailableError",
     "DecisionCallback",
     "InboundHandler",

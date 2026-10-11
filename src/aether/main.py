@@ -24,6 +24,7 @@ from .composio_bridge import ComposioBridge
 from .config import AppConfig, Settings, load_config
 from .config_store import ConfigManager, ConfigOverrides
 from .connectors import build_messaging_connectors
+from .connectors.attachments import AttachmentProcessor
 from .connectors.mcp_host import MCPHost
 from .connectors.registry import ToolRegistry
 from .connectors.screenvision import ScreenVision
@@ -161,6 +162,8 @@ def create_app(
             )
         app.state.providers = providers
         app.state.screen_vision = ScreenVision(providers, events) if providers else None
+        # shared chat files ride the same rails — the loop's drain calls it
+        app.state.attachments = AttachmentProcessor(providers, events) if providers else None
 
         judge_provider = providers.for_role("salience") if providers else None
         entities = Entities(pool, cipher, audit, LLMSamePersonJudge(judge_provider))
@@ -223,6 +226,7 @@ def create_app(
             settings=settings,
             composio=composio,
             transcript=chat_history,
+            attachments=app.state.attachments,
         )
         app.state.agent = agent
         native = register_native_tools(

@@ -38,6 +38,7 @@ from ..composio_bridge import SERVER_ENTRY, SERVER_NAME, ComposioBridge
 from ..config import AppConfig, PollTool
 from ..config_store import ConfigManager
 from ..config_store import actions_word as _actions_word
+from ..connectors.attachments import AttachmentProcessor, attachments_note
 from ..connectors.base import (
     ConnectorUnavailableError,
     InboundMessage,
@@ -342,6 +343,7 @@ class AgentLoop:
         settings: Any = None,
         composio: ComposioBridge | None = None,
         transcript: Any = None,
+        attachments: AttachmentProcessor | None = None,
     ) -> None:
         self._providers = providers
         self._tools = tools
@@ -368,6 +370,9 @@ class AgentLoop:
         # the cross-surface transcript (chat_messages) — both directions,
         # read back each turn as conversation memory
         self._transcript = transcript
+        # shared files: images described, documents read — past the
+        # allowlist, in the drain, so a filtered sender's files are never seen
+        self._attachments = attachments
         # the guided /config walk in progress, if any — memory only
         self._wizard: ConfigWizard | None = None
         # the guided /apps walk in progress, if any — same rules, memory only
@@ -548,6 +553,27 @@ class AgentLoop:
                     message.surface,
                 )
                 continue
+            # (b2) files the user shared: described (images) or extracted
+            # (documents) into memory here — past the allowlist, before the
+            # observation list is built, so they reach this same tick's turn
+            if self._attachments is not None and message.attachments:
+                try:
+                    results = await self._attachments.process(message)
+                except Exception:
+                    log.exception("attachment processing failed — continuing")
+                    results = []
+                for one in results:
+                    if (
+                        one.ingested is not None
+                        and one.ingested.stored
+                        and one.ingested.event_id is not None
+                    ):
+                        self._last_event_id = max(self._last_event_id, one.ingested.event_id)
+                note = attachments_note(results)
+                if note:
+                    # solicited — the user just shared something, so it never
+                    # waits out quiet hours
+                    await self._surfaces.send_to_user(note)
             # transcript write happens only past the allowlist — a filtered
             # sender must never reach conversation memory, or their words
             # would leak into a later prompt. Web inbound is persisted by
@@ -1614,10 +1640,7 @@ class AgentLoop:
             result = ToolResult(
                 tool_call_id=call.id,
                 name=call.name,
-                content=(
-                    f"already settled — {settled[call.name]}. "
-                    "Do not propose it again."
-                ),
+                content=(f"already settled — {settled[call.name]}. Do not propose it again."),
             )
             self._note_call(trace, call, result, ruling=ruling)
             return result

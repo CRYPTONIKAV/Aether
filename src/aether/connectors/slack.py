@@ -8,13 +8,18 @@ import contextlib
 import logging
 from typing import Any
 
+import httpx
+
 from ..authz.approvals import APPROVED, DENIED
+from .attachments import MAX_ATTACHMENT_BYTES
 from .base import (
     ApprovalDecider,
+    Attachment,
     DecisionCallback,
     InboundHandler,
     InboundMessage,
     MessagingConnector,
+    classify_attachment,
 )
 
 log = logging.getLogger("aether.connectors.slack")
@@ -23,17 +28,35 @@ APPROVE_ACTION = "aether_approve"
 DENY_ACTION = "aether_deny"
 
 
-def event_to_inbound(event: dict[str, Any]) -> InboundMessage | None:
+def event_to_inbound(
+    event: dict[str, Any], downloaded: dict[str, bytes] | None = None
+) -> InboundMessage | None:
     """A Slack message event as an InboundMessage, or None when it's not a
-    human DM (bot chatter and channel noise are ignored)."""
+    human DM (bot chatter and channel noise are ignored). A file share
+    (`subtype: "file_share"`) is a human DM too — `downloaded` carries the
+    bytes per file id, fetched by the connector which owns the token."""
     if not event or event.get("channel_type") != "im":
         return None
-    if event.get("bot_id") or event.get("subtype"):
+    subtype = event.get("subtype") or ""
+    files = event.get("files") or []
+    if event.get("bot_id") or (subtype and subtype != "file_share"):
+        return None
+    if subtype == "file_share" and not files:
         return None
     text = event.get("text") or ""
     user = event.get("user") or ""
-    if not text or not user:
+    if (not text and not files) or not user:
         return None
+    attachments = tuple(
+        Attachment(
+            classify_attachment(str(f.get("name") or ""), str(f.get("mimetype") or "")),
+            str(f.get("name") or "file"),
+            str(f.get("mimetype") or ""),
+            blob,
+        )
+        for f in files
+        if (blob := (downloaded or {}).get(str(f.get("id")), b""))
+    )
     return InboundMessage(
         surface="slack",
         handle=user,
@@ -42,6 +65,7 @@ def event_to_inbound(event: dict[str, Any]) -> InboundMessage | None:
         # a thread reply carries its parent's ts — enough to link a later
         # "why?" back to the trace of the message it answers
         reply_to_id=str(event.get("thread_ts") or ""),
+        attachments=attachments,
     )
 
 
@@ -152,11 +176,36 @@ class SlackConnector(MessagingConnector):
     # -- inbound -----------------------------------------------------------------
 
     async def on_message(self, event: dict[str, Any], say: Any, client: Any) -> None:
-        inbound = event_to_inbound(dict(event))
+        event = dict(event)
+        downloaded = await self._download_files(list(event.get("files") or []))
+        inbound = event_to_inbound(event, downloaded)
         if inbound is None:
             return
         self._chat_ref = inbound.chat_ref
         await self._emit_inbound(inbound)
+
+    async def _download_files(self, files: list[dict[str, Any]]) -> dict[str, bytes]:
+        """Bytes per file id — the connector is the one holding the bot
+        token. A file that can't be downloaded (oversize, network) is
+        logged and skipped; it must never take the surface down."""
+        out: dict[str, bytes] = {}
+        for f in files:
+            url = f.get("url_private_download") or ""
+            if not url:
+                continue
+            try:
+                if (f.get("size") or 0) > MAX_ATTACHMENT_BYTES:
+                    log.warning("slack file %s is over the size cap — skipped", f.get("name"))
+                    continue
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(
+                        url, headers={"Authorization": f"Bearer {self._bot_token}"}
+                    )
+                response.raise_for_status()
+                out[str(f.get("id"))] = response.content
+            except Exception:
+                log.warning("slack file download failed — continuing", exc_info=True)
+        return out
 
     # -- buttons -----------------------------------------------------------------
 

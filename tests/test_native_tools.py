@@ -122,6 +122,27 @@ async def test_memory_search_rejects_a_non_numeric_limit() -> None:
     assert out == "memory_search needs limit to be a number."
 
 
+async def test_memory_search_reads_a_shared_document_back_not_its_json() -> None:
+    # a shared doc's payload carries the full extracted text — the JSON
+    # dump would clip it away to nothing, so the hit renders the file's own
+    # words instead
+    doc = Event(
+        id=7,
+        source="telegram",
+        kind="shared_doc",
+        occurred_at=datetime(2026, 9, 24, 10, 30, tzinfo=UTC),
+        payload={"filename": "report.pdf", "text": "quarterly revenue " + "detail " * 100},
+        salience_score=7.0,
+        memorable=True,
+        meta={},
+    )
+    kit = NativeKit(FakeEventStore(search_results=[doc]))
+    out = await kit.run("memory_search", {"query": "revenue"})
+    assert "[7] 2026-09-24 10:30 telegram/shared_doc — report.pdf:" in out
+    assert "quarterly revenue" in out
+    assert '"text"' not in out  # the JSON dump shape is gone
+
+
 async def test_note_entity_resolves_then_records() -> None:
     kit = NativeKit()
     out = await kit.run(

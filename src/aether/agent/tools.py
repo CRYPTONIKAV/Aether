@@ -479,6 +479,16 @@ def register_native_tools(
             return "No matching memories."
         lines = []
         for e in found:
+            p = e.payload or {}
+            if p.get("text") and p.get("filename"):
+                # a shared document — the one channel where the model can
+                # re-read what the file said; the JSON dump would clip the
+                # text away to nothing
+                lines.append(
+                    f"[{e.id}] {e.occurred_at:%Y-%m-%d %H:%M} {e.source}/{e.kind} "
+                    f"— {p.get('filename')}:\n" + _clip(str(p.get("text", "")), 2000)
+                )
+                continue
             lines.append(
                 f"[{e.id}] {e.occurred_at:%Y-%m-%d %H:%M} {e.source}/{e.kind}: "
                 + _clip(json.dumps(e.payload, default=str, ensure_ascii=False))

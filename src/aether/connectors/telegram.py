@@ -16,12 +16,15 @@ from telegram.error import NetworkError
 from telegram.ext import Application, CallbackQueryHandler, MessageHandler, filters
 
 from ..authz.approvals import APPROVED, DENIED
+from .attachments import MAX_ATTACHMENT_BYTES
 from .base import (
     ApprovalDecider,
+    Attachment,
     DecisionCallback,
     InboundHandler,
     InboundMessage,
     MessagingConnector,
+    classify_attachment,
 )
 
 log = logging.getLogger("aether.connectors.telegram")
@@ -103,7 +106,12 @@ class TelegramConnector(MessagingConnector):
     async def _on_message(self, update: Update, context: Any) -> None:
         message = update.effective_message
         user = update.effective_user
-        if message is None or user is None or not message.text:
+        if message is None or user is None:
+            return
+        attachments = await self._collect_attachments(message)
+        # the user's words live in the caption when the message carries a file
+        text = message.text or getattr(message, "caption", None) or ""
+        if not text and not attachments:
             return
         handle = f"@{user.username}" if user.username else f"id:{user.id}"
         chat_ref = str(message.chat_id)
@@ -113,12 +121,46 @@ class TelegramConnector(MessagingConnector):
             InboundMessage(
                 surface="telegram",
                 handle=handle,
-                text=message.text,
+                text=text,
                 chat_ref=chat_ref,
                 reply_to_id=str(reply_to.message_id) if reply_to is not None else "",
                 reply_to_text=(reply_to.text or "") if reply_to is not None else "",
+                attachments=tuple(attachments),
             )
         )
+
+    async def _collect_attachments(self, message: Any) -> list[Attachment]:
+        """Photos and files the user sent, downloaded now — the connector is
+        the one holding the platform credentials. A file that can't be
+        downloaded (oversize, network) is logged and skipped; it must never
+        take the surface down."""
+        out: list[Attachment] = []
+        photos = list(getattr(message, "photo", None) or [])
+        if photos:  # sizes ascending — the last is the largest
+            data = await self._download(photos[-1], "photo.jpg")
+            if data is not None:
+                out.append(Attachment("image", "photo.jpg", "image/jpeg", data))
+        document = getattr(message, "document", None)
+        if document is not None:
+            name = getattr(document, "file_name", None) or "file"
+            media = getattr(document, "mime_type", None) or ""
+            data = await self._download(document, name)
+            if data is not None:
+                out.append(Attachment(classify_attachment(name, media), name, media, data))
+        return out
+
+    async def _download(self, telegram_file: Any, filename: str) -> bytes | None:
+        try:
+            if (getattr(telegram_file, "file_size", 0) or 0) > MAX_ATTACHMENT_BYTES:
+                log.warning("telegram file %s is over the size cap — skipped", filename)
+                return None
+            file = await telegram_file.get_file()
+            return bytes(await file.download_as_bytearray())
+        except Exception:
+            log.warning(
+                "telegram file %s couldn't be downloaded — continuing", filename, exc_info=True
+            )
+            return None
 
     async def _on_button(self, update: Update, context: Any) -> None:
         query = update.callback_query

@@ -12,12 +12,15 @@ from typing import Any
 import discord
 
 from ..authz.approvals import APPROVED, DENIED
+from .attachments import MAX_ATTACHMENT_BYTES
 from .base import (
     ApprovalDecider,
+    Attachment,
     DecisionCallback,
     InboundHandler,
     InboundMessage,
     MessagingConnector,
+    classify_attachment,
 )
 
 log = logging.getLogger("aether.connectors.discord")
@@ -129,7 +132,10 @@ class DiscordConnector(MessagingConnector):
     # -- inbound -----------------------------------------------------------------
 
     async def on_message(self, message: Any) -> None:
-        if message.author.bot or not _is_dm(message.channel) or not message.content:
+        if message.author.bot or not _is_dm(message.channel):
+            return
+        attachments = await self._collect_attachments(message)
+        if not message.content and not attachments:
             return
         self._channel = message.channel
         handle = message.author.name or str(message.author.id)
@@ -147,8 +153,27 @@ class DiscordConnector(MessagingConnector):
                     if reference is not None
                     else ""
                 ),
+                attachments=tuple(attachments),
             )
         )
+
+    async def _collect_attachments(self, message: Any) -> list[Attachment]:
+        """Files the user sent, downloaded now — the connector holds the
+        platform credentials. A file that can't be downloaded (oversize,
+        network) is logged and skipped; it must never take the surface down."""
+        out: list[Attachment] = []
+        for attachment in list(getattr(message, "attachments", None) or []):
+            name = getattr(attachment, "filename", None) or "file"
+            try:
+                if (getattr(attachment, "size", 0) or 0) > MAX_ATTACHMENT_BYTES:
+                    log.warning("discord file %s is over the size cap — skipped", name)
+                    continue
+                data = await attachment.read()
+                media = getattr(attachment, "content_type", None) or ""
+                out.append(Attachment(classify_attachment(name, media), name, media, data))
+            except Exception:
+                log.warning("discord attachment download failed — continuing", exc_info=True)
+        return out
 
     # -- outbound ------------------------------------------------------------------
 
