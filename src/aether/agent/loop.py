@@ -29,6 +29,7 @@ import json
 import logging
 import time
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from ..authz.approvals import APPROVED, DENIED, Approval, Approvals
@@ -54,6 +55,7 @@ from ..memory.context import ContextBuilder
 from ..memory.entities import Sender
 from ..memory.events import Event, EventStore
 from ..memory.salience import Salience
+from ..memory.vectors import MemoryHit, VectorMemory
 from ..routines import Routines, trigger_matches
 from ..scheduler.jobs import ScheduledAction, Scheduler
 from ..secret_env import EnvResolver
@@ -344,6 +346,7 @@ class AgentLoop:
         composio: ComposioBridge | None = None,
         transcript: Any = None,
         attachments: AttachmentProcessor | None = None,
+        vectors: VectorMemory | None = None,
     ) -> None:
         self._providers = providers
         self._tools = tools
@@ -373,6 +376,10 @@ class AgentLoop:
         # shared files: images described, documents read — past the
         # allowlist, in the drain, so a filtered sender's files are never seen
         self._attachments = attachments
+        # the vector half of memory: chunked, embedded, sourced — retrieval
+        # is semantic and automatic, a missing embedder just falls back to
+        # the keyword scan
+        self._vectors = vectors
         # the guided /config walk in progress, if any — memory only
         self._wizard: ConfigWizard | None = None
         # the guided /apps walk in progress, if any — same rules, memory only
@@ -501,6 +508,15 @@ class AgentLoop:
 
     async def _tick(self) -> None:
         anchor = self._last_event_id
+
+        # (a0) events that predate vector memory (or lost a race with a
+        # rate limit) get indexed a batch per tick — self-throttling, and
+        # a failure here costs this tick nothing
+        if self._vectors is not None:
+            try:
+                await self._vectors.backfill(50)
+            except Exception:
+                log.exception("vector backfill failed — continuing")
 
         # (a) due source polls first, so their results are observed this tick
         await self._run_due_polls()
@@ -1259,9 +1275,17 @@ class AgentLoop:
 
         ctx = await self._context.build()
         history: list[Message] = []
+        # every meaningful question pulls its own related memories in —
+        # older conversations, shared documents, whatever the question
+        # touches — without the model having to think to ask
+        recalled: list[dict[str, Any]] = []
+        recall_lines: list[str] = []
+        if messages:
+            recalled, recall_lines = await self._recall_related(messages, ctx, observations)
         context_block = self._format_context(ctx)
-        if context_block:
-            history.append(Message.user(f"[working context]\n{context_block}"))
+        head = "\n\n".join(part for part in (context_block, "\n".join(recall_lines)) if part)
+        if head:
+            history.append(Message.user(f"[working context]\n{head}"))
         history.extend(await self._transcript_messages(messages))
         for event in reversed(observations):  # oldest first inside the block
             history.append(Message.user(f"[new event] {self._event_line(event)}"))
@@ -1296,6 +1320,10 @@ class AgentLoop:
                     }
                     for e in observations
                 ],
+                # what the turn kept in mind beyond its own window — same
+                # shape as observations, so the panel's plain-language
+                # rendering parses it unchanged
+                "recalled": recalled,
             },
             "calls": calls,
         }
@@ -1423,6 +1451,124 @@ class AgentLoop:
         "mail isn't connected" instead of an invented capability."""
         servers = self._tools.mcp_servers()
         return ", ".join(servers) if servers else "none"
+
+    async def _recall_related(
+        self, messages: list[InboundMessage], ctx: Any, observations: list[Event]
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """The memories a solicited turn pulls in automatically: chunks of
+        older conversations and shared documents that relate to what was
+        just asked — semantic when vector memory is wired, the keyword-fuzzy
+        scan when it isn't. Excludes what the turn already sees (working
+        context events, this tick's chat observations), but a document
+        shared this same tick stays retrievable — that is what makes
+        "what's in slide 3" answerable in one turn. Failure costs the turn
+        nothing: an empty recall."""
+        query = " ".join(
+            [m.text for m in messages] + [m.reply_to_text for m in messages if m.reply_to_text]
+        ).strip()
+        if not query:
+            return [], []
+        excluded = {e.id for e in ctx.events}
+        excluded |= {e.id for e in observations if e.kind == "chat_message"}
+        try:
+            if self._vectors is not None and self._vectors.enabled:
+                hits = await self._vectors.search(query, limit=12)
+                # a document the user just named goes to the front, ahead
+                # of the similarity ranking alone — "explain deadlock
+                # prevention from OSY.pdf" must land in OSY.pdf
+                lowered = query.lower()
+                hits.sort(
+                    key=lambda h: (
+                        0 if h.filename and Path(h.filename).stem.lower() in lowered else 1,
+                        -h.score,
+                    )
+                )
+                candidates: list[tuple[int, str, str, str, str]] = []
+                for hit in hits:
+                    candidates.append(
+                        (hit.event_id, hit.source, hit.kind, await self._hit_header(hit), hit.text)
+                    )
+                return self._render_recall(candidates, excluded)
+            found = await self._events.search(query, limit=6)
+            candidates = [
+                (
+                    e.id,
+                    e.source,
+                    e.kind,
+                    self._event_header(e),
+                    self._event_memory_text(e),
+                )
+                for e in found
+            ]
+            return self._render_recall(candidates, excluded)
+        except Exception:
+            log.exception("memory recall failed — continuing without it")
+            return [], []
+
+    async def _hit_header(self, hit: MemoryHit) -> str:
+        """The citation half of a recalled chunk: which document and page,
+        or who said it and when — never a bare blob of text."""
+        when = f"{hit.occurred_at:%Y-%m-%d}"
+        if hit.kind == "shared_doc":
+            where = ", ".join(part for part in (hit.filename, hit.location) if part)
+            return where or hit.source
+        if hit.kind == "chat_message":
+            handle = None
+            try:
+                event = await self._events.get(hit.event_id)
+                if event and isinstance(event.payload, dict):
+                    sender = event.payload.get("_sender")
+                    if isinstance(sender, dict):
+                        handle = sender.get("handle")
+            except Exception:
+                pass
+            if handle:
+                return f"@{handle} on {hit.source}, {when}"
+        return f"{hit.source}, {when}"
+
+    def _event_header(self, event: Event) -> str:
+        when = f"{event.occurred_at:%Y-%m-%d}"
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        if event.kind == "shared_doc":
+            return str(payload.get("filename") or event.source)
+        if event.kind == "chat_message":
+            sender = payload.get("_sender")
+            if isinstance(sender, dict) and sender.get("handle"):
+                return f"@{sender['handle']} on {event.source}, {when}"
+        return f"{event.source}, {when}"
+
+    @staticmethod
+    def _event_memory_text(event: Event) -> str:
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        if event.kind == "chat_message":
+            return str(payload.get("text") or "")
+        return str(payload.get("text") or payload.get("description") or "")
+
+    @staticmethod
+    def _render_recall(
+        candidates: list[tuple[int, str, str, str, str]], excluded: set[int]
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """Candidates in, capped prompt lines + trace entries out. The caps
+        rank by relevance, they don't window the store: at most 3 chunks
+        per source event, 6 lines, ~4,000 chars — so six documents can
+        contribute without any one of them drowning the rest."""
+        lines: list[str] = []
+        trace: list[dict[str, Any]] = []
+        per_event: dict[int, int] = {}
+        chars = 0
+        for event_id, source, kind, header, text in candidates:
+            if event_id in excluded or per_event.get(event_id, 0) >= 3:
+                continue
+            line = f"[related memory — {header}] {text[:600]}".strip()
+            if not line:
+                continue
+            if len(lines) >= 6 or chars + len(line) > 4000:
+                break
+            per_event[event_id] = per_event.get(event_id, 0) + 1
+            chars += len(line)
+            lines.append(line)
+            trace.append({"id": event_id, "source": source, "kind": kind, "line": line[:200]})
+        return trace, lines
 
     async def _transcript_messages(self, current: list[InboundMessage]) -> list[Message]:
         """The recent cross-surface dialogue as user/assistant messages —

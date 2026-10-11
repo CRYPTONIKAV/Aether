@@ -15,6 +15,7 @@ from fakes import (
     FakeScheduler,
     FakeSurfaceConnector,
     FakeTraces,
+    FakeVectorMemory,
 )
 
 from aether.agent.loop import CaptureRequestBox, SurfaceFanout
@@ -22,6 +23,7 @@ from aether.agent.tools import plain_replay, register_native_tools
 from aether.authz.audit import ChainVerification
 from aether.connectors.registry import ToolRegistry
 from aether.memory.events import Event
+from aether.memory.vectors import MemoryHit
 from aether.workspace import Workspace
 
 
@@ -47,6 +49,7 @@ class NativeKit:
         audit: FakeAudit | None = None,
         config_manager: FakeConfigManager | None = None,
         workspace: object | None = None,
+        vectors: object | None = None,
     ) -> None:
         self.registry = ToolRegistry()
         self.events = events or FakeEventStore()
@@ -71,6 +74,7 @@ class NativeKit:
             audit=audit,  # and the integrity check
             config_manager=config_manager,  # and the config tools
             workspace=workspace,  # and the workspace tools
+            vectors=vectors,  # and the semantic search layer
         )
 
     async def run(self, name: str, params: dict) -> str:
@@ -141,6 +145,69 @@ async def test_memory_search_reads_a_shared_document_back_not_its_json() -> None
     assert "[7] 2026-09-24 10:30 telegram/shared_doc — report.pdf:" in out
     assert "quarterly revenue" in out
     assert '"text"' not in out  # the JSON dump shape is gone
+
+
+def _chunk_hit(event_id: int, filename: str = "", location: str = "") -> MemoryHit:
+    return MemoryHit(
+        event_id=event_id,
+        chunk_id=event_id * 10,
+        source="telegram",
+        kind="shared_doc" if filename else "chat_message",
+        filename=filename,
+        location=location,
+        text=f"chunk text from {filename or 'chat'} {location}".strip(),
+        score=0.8,
+        occurred_at=datetime(2026, 9, 24, 10, 30, tzinfo=UTC),
+    )
+
+
+async def test_memory_search_with_vectors_ranks_chunks_with_their_location() -> None:
+    vectors = FakeVectorMemory(hits=[_chunk_hit(4, "OSY.pdf", "page 3")])
+    kit = NativeKit(vectors=vectors)
+    out = await kit.run("memory_search", {"query": "deadlock prevention"})
+    assert "[4] 2026-09-24 10:30 telegram/shared_doc — OSY.pdf, page 3:" in out
+    assert "chunk text from OSY.pdf page 3" in out
+    assert vectors.queries == ["deadlock prevention"]
+    # the fuzzy scan was never spent — the semantic layer answered
+    assert kit.events.ingested == []
+
+
+async def test_memory_search_rereads_a_whole_document_by_id() -> None:
+    vectors = FakeVectorMemory(hits=[_chunk_hit(4, "OSY.pdf", "page 3")])
+    vectors.documents[4] = "page 1: intro\n\npage 2: context\n\npage 3: conclusion"
+    kit = NativeKit(vectors=vectors)
+    out = await kit.run("memory_search", {"query": "", "event_id": 4})
+    assert out == "page 1: intro\n\npage 2: context\n\npage 3: conclusion"
+    assert vectors.queries == []  # a read, not a search
+
+    # without the vector layer the event payload preview is the read-back
+    doc = Event(
+        id=4,
+        source="telegram",
+        kind="shared_doc",
+        occurred_at=datetime(2026, 9, 24, 10, 30, tzinfo=UTC),
+        payload={"filename": "OSY.pdf", "text": "the old preview text"},
+        salience_score=7.0,
+        memorable=True,
+        meta={},
+    )
+    fallback = NativeKit(FakeEventStore(events={4: doc}))
+    out = await fallback.run("memory_search", {"query": "", "event_id": 4})
+    assert "OSY.pdf" in out and "the old preview text" in out
+    assert await fallback.run("memory_search", {"query": "", "event_id": 99}) == (
+        "No stored memory with id 99."
+    )
+
+
+async def test_memory_search_vector_failure_falls_back_to_the_fuzzy_scan() -> None:
+    class ExplodingVectors:
+        async def search(self, query, limit=5, min_similarity=0.35):
+            raise RuntimeError("embedding api down")
+
+    kit = NativeKit(FakeEventStore(search_results=[_event(3)]), vectors=ExplodingVectors())
+    out = await kit.run("memory_search", {"query": "alice reply"})
+    assert "[3] 2026-09-24 10:30 telegram/chat_message" in out
+    assert "alice owes me a reply" in out
 
 
 async def test_note_entity_resolves_then_records() -> None:

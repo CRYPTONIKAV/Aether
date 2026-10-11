@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
 
 from aether.agent.traces import Trace
@@ -10,6 +11,7 @@ from aether.llm.types import Message, ToolCall, ToolResult, ToolSpec, Turn
 from aether.memory.context import AgentContext
 from aether.memory.entities import Entity, PersonRef
 from aether.memory.events import Event, IngestResult
+from aether.memory.vectors import MemoryHit
 from aether.routines import Routine
 from aether.scheduler.jobs import PENDING as JOB_PENDING
 from aether.scheduler.jobs import ScheduledAction
@@ -558,6 +560,67 @@ class FakeEventStore:
         self.updates.append(
             (event_id, score, memorable, {"category": category, "actionability": actionability})
         )
+
+
+class FakeEmbedder:
+    """Embedder double: every distinct word gets its own orthogonal axis, so
+    texts that share words land close by cosine. Deterministic, no network."""
+
+    model = "fake-embedding"
+    dims = 64
+
+    def __init__(self) -> None:
+        self._axes: dict[str, int] = {}
+        self.calls: list[tuple[list[str], str]] = []
+
+    def _vector(self, text: str) -> list[float]:
+        vector = [0.0] * self.dims
+        for word in re.findall(r"\w+", text.lower()):
+            if word not in self._axes:
+                self._axes[word] = len(self._axes)
+            vector[self._axes[word] % self.dims] += 1.0
+        if not any(vector):
+            vector[0] = 1.0
+        return vector
+
+    async def embed(self, texts: list[str], task: str = "document") -> list[list[float]]:
+        self.calls.append((texts, task))
+        return [self._vector(text) for text in texts]
+
+
+class FakeVectorMemory:
+    """VectorMemory double: canned hits, recorded calls — loop and tool
+    tests never touch a database or the network."""
+
+    def __init__(self, hits: list[MemoryHit] | None = None, enabled: bool = True) -> None:
+        self.enabled = enabled
+        self.hits = list(hits or [])
+        self.queries: list[str] = []
+        self.backfills = 0
+        self.indexed_events: list[dict] = []
+        self.indexed_docs: list[dict] = []
+        self.documents: dict[int, str] = {}
+
+    async def backfill(self, batch: int = 50) -> int | None:
+        self.backfills += 1
+        return None
+
+    async def search(self, query: str, limit: int = 8, min_similarity: float = 0.35):
+        self.queries.append(query)
+        return self.hits[:limit]
+
+    async def index_event(self, event_id, source, kind, payload, occurred_at):
+        self.indexed_events.append(
+            {"event_id": event_id, "source": source, "kind": kind, "payload": payload}
+        )
+
+    async def index_doc(self, event_id, source, filename, parts):
+        self.indexed_docs.append(
+            {"event_id": event_id, "source": source, "filename": filename, "parts": parts}
+        )
+
+    async def read_document(self, event_id: int) -> str:
+        return self.documents.get(event_id, "")
 
 
 class FakeAgentSettings:

@@ -29,6 +29,7 @@ from .connectors.mcp_host import MCPHost
 from .connectors.registry import ToolRegistry
 from .connectors.screenvision import ScreenVision
 from .llm.base import ProviderError
+from .llm.embeddings import GeminiEmbedder
 from .llm.registry import ProviderRegistry
 from .logging_setup import configure_logging
 from .memory.context import ContextBuilder
@@ -37,6 +38,7 @@ from .memory.db import create_pool, run_migrations
 from .memory.entities import Entities, LLMSamePersonJudge
 from .memory.events import EventStore
 from .memory.salience import LLMJudge, Salience
+from .memory.vectors import VectorMemory
 from .routines import Routines
 from .scheduler import Scheduler, SchedulerWorker
 from .secret_env import EnvResolver
@@ -131,9 +133,25 @@ def create_app(
         app.state.settings = settings
         app.state.config = config
 
+        # --- vector memory: free embeddings make recall semantic ----------
+        # best effort, same as the providers — without a key the layer is a
+        # quiet no-op and retrieval falls back to keyword search
+        embedder = None
+        if config.llm.embedding_model and settings.gemini_api_key:
+            try:
+                embedder = GeminiEmbedder.build(settings.gemini_api_key, config.llm.embedding_model)
+            except ProviderError as exc:
+                log.warning(
+                    "embedding model unavailable (%s) — memory search stays "
+                    "keyword-based until the key is set",
+                    exc,
+                )
+        vectors = VectorMemory(pool, cipher, embedder)
+        app.state.vectors = vectors
+
         # --- memory + authz ------------------------------------------------
         audit = AuditLog(pool)
-        events = EventStore(pool, cipher, audit, config.contacts)
+        events = EventStore(pool, cipher, audit, config.contacts, indexer=vectors)
         approvals = Approvals(pool, cipher, audit, config.authz.approval_ttl_hours)
         agent_settings = AgentSettings(pool, cipher)
         app.state.audit = audit
@@ -163,7 +181,9 @@ def create_app(
         app.state.providers = providers
         app.state.screen_vision = ScreenVision(providers, events) if providers else None
         # shared chat files ride the same rails — the loop's drain calls it
-        app.state.attachments = AttachmentProcessor(providers, events) if providers else None
+        app.state.attachments = (
+            AttachmentProcessor(providers, events, indexer=vectors) if providers else None
+        )
 
         judge_provider = providers.for_role("salience") if providers else None
         entities = Entities(pool, cipher, audit, LLMSamePersonJudge(judge_provider))
@@ -227,6 +247,7 @@ def create_app(
             composio=composio,
             transcript=chat_history,
             attachments=app.state.attachments,
+            vectors=vectors,
         )
         app.state.agent = agent
         native = register_native_tools(
@@ -242,6 +263,7 @@ def create_app(
             audit=audit,
             config_manager=config_manager,
             workspace=workspace,
+            vectors=vectors,
         )
         log.info("native tools registered: %d", native)
 

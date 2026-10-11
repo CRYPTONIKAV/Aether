@@ -155,6 +155,69 @@ async def test_search_scores_the_recent_window(db) -> None:
 
 
 # ---------------------------------------------------------------------------
+# the ingest hook: every stored event is indexed exactly once
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+async def test_ingest_indexes_the_event_and_a_duplicate_does_not_reindex(db) -> None:
+    from fakes import FakeEmbedder
+
+    from aether.memory.vectors import VectorMemory
+
+    cipher = Cipher.from_b64(generate_key_b64())
+    audit = AuditLog(db)
+    vectors = VectorMemory(db, cipher, FakeEmbedder())
+    events = EventStore(db, cipher, audit, _contacts(), indexer=vectors)
+
+    first = await events.ingest(
+        source="telegram", kind="chat_message", payload={"text": "hello from the hook test"}
+    )
+    second = await events.ingest(
+        source="telegram", kind="chat_message", payload={"text": "hello from the hook test"}
+    )
+    assert (first.stored, second.reason) == (True, "duplicate")
+
+    assert first.event_id is not None
+    row = await db.fetchrow(
+        "SELECT COUNT(*) AS n, BOOL_OR(indexed_at IS NOT NULL) AS marked FROM events WHERE id = $1",
+        first.event_id,
+    )
+    assert row["n"] == 1 and row["marked"] is True
+    # one message, one chunk — the dedup gate sits ahead of the hook
+    assert await db.fetchval("SELECT COUNT(*) FROM memory_chunks") == 1
+    # and the chunk is searchable
+    assert await vectors.search("hello hook", limit=3)
+
+
+@pytest.mark.integration
+async def test_a_filtered_sender_is_never_indexed(db) -> None:
+    from fakes import FakeEmbedder
+
+    from aether.memory.vectors import VectorMemory
+
+    cipher = Cipher.from_b64(generate_key_b64())
+    audit = AuditLog(db)
+    vectors = VectorMemory(db, cipher, FakeEmbedder())
+    events = EventStore(
+        db,
+        cipher,
+        audit,
+        _contacts("enforce", {"platform": "telegram", "handle": "@vedant"}),
+        indexer=vectors,
+    )
+
+    dropped = await events.ingest(
+        source="telegram",
+        kind="chat_message",
+        payload={"text": "you never saw this"},
+        sender=Sender("telegram", "@stranger"),
+    )
+    assert dropped.reason == "filtered:contacts"
+    assert await db.fetchval("SELECT COUNT(*) FROM memory_chunks") == 0
+
+
+# ---------------------------------------------------------------------------
 # entities: resolution, notes, merges
 # ---------------------------------------------------------------------------
 

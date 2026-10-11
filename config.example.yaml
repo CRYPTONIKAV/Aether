@@ -26,6 +26,7 @@ llm:
   # Ollama:  provider: ollama,  model: llama3.3   (needs OLLAMA_BASE_URL in .env)
   vision_model:                  # optional separate vision-capable model
   salience_model:                # optional cheaper model for the salience judge
+  embedding_model: gemini-embedding-001  # free on the Gemini API key; none = keyword search
   ollama_vision: false            # ollama only: true if the pulled model accepts images
   max_tokens: 16000
 

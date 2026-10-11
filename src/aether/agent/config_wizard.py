@@ -170,6 +170,13 @@ _SECTIONS: tuple[_Section, ...] = (
                 "{cur} — or none to use my main model)",
             ),
             _Setting(
+                "llm.embedding_model",
+                "embedding_model",
+                "a small free model that makes my memory searchable",
+                "which embedding model should search my memory? (currently "
+                "{cur} — or none for keyword search)",
+            ),
+            _Setting(
                 "llm.ollama_vision",
                 "ollama_vision",
                 "ollama only: whether my model reads images",

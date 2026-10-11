@@ -13,6 +13,7 @@ from aether.connectors.attachments import (
     AttachmentProcessor,
     AttachmentResult,
     attachments_note,
+    extract_doc_parts,
     extract_doc_text,
 )
 from aether.connectors.base import Attachment, InboundMessage, classify_attachment
@@ -239,3 +240,45 @@ class TestExtraction:
         for name in ("a.pdf", "a.docx", "a.xlsx", "a.pptx", "a.zip", ""):
             assert extract_doc_text(name, "", garbage) == ""
         assert extract_doc_text("a.txt", "", garbage) != ""  # plain text survives anything
+
+
+class TestStructuredParts:
+    """extract_doc_parts: the (location, text) form the vector memory
+    indexes — pages and slides carry the numbering the file itself has,
+    everything else is one whole part."""
+
+    def test_pdf_parts_are_per_page(self) -> None:
+        parts = extract_doc_parts("letter.pdf", "application/pdf", MINIMAL_PDF)
+        assert parts, "the minimal pdf has at least one page"
+        assert parts[0][0] == "page 1"
+        assert "hello world" in parts[0][1]
+
+    def test_pptx_parts_are_per_slide_in_deck_order(self) -> None:
+        slide = (
+            b'<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" '
+            b'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+            b"<p:cSld><p:spTree><p:sp><p:txBody>"
+            b"<a:p><a:r><a:t>Roadmap</a:t></a:r></a:p>"
+            b"</p:txBody></p:sp></p:spTree></p:cSld></p:sld>"
+        )
+        # slide10 would sort before slide2 lexicographically — numeric
+        # order is what the deck actually shows
+        pptx = _zip(
+            {
+                "ppt/slides/slide10.xml": slide,
+                "ppt/slides/slide2.xml": slide,
+                "ppt/slides/slide1.xml": slide,
+            }
+        )
+        parts = extract_doc_parts("deck.pptx", "", pptx)
+        assert [loc for loc, _ in parts] == ["slide 1", "slide 2", "slide 10"]
+        assert all("Roadmap" in text for _, text in parts)
+
+    def test_plain_text_is_one_whole_part(self) -> None:
+        assert extract_doc_parts("a.txt", "text/plain", b"hello\nworld") == [("", "hello\nworld")]
+        assert extract_doc_parts("a.csv", "", b"a,b") == [("", "a,b")]
+
+    def test_unreadable_file_has_no_parts(self) -> None:
+        garbage = b"\x00\x01garbage\xff\xfe"
+        assert extract_doc_parts("a.pdf", "", garbage) == []
+        assert extract_doc_parts("a.docx", "", garbage) == []

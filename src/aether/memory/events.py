@@ -22,7 +22,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import asyncpg
 from rapidfuzz import fuzz
@@ -31,6 +31,9 @@ from ..authz.audit import AuditLog
 from ..config import ContactsConfig
 from .crypto import Cipher
 from .entities import Sender, normalize_handle
+
+if TYPE_CHECKING:
+    from .vectors import VectorMemory
 
 log = logging.getLogger("aether.memory.events")
 
@@ -106,11 +109,13 @@ class EventStore:
         cipher: Cipher,
         audit: AuditLog,
         contacts: ContactsConfig,
+        indexer: VectorMemory | None = None,
     ) -> None:
         self._pool = pool
         self._cipher = cipher
         self._audit = audit
         self._contacts = contacts
+        self._indexer = indexer
 
     # -- ingestion ----------------------------------------------------------
 
@@ -169,6 +174,24 @@ class EventStore:
                 blob,
                 event_id,
             )
+        # the single indexing choke point: outside the transaction (the FK
+        # row is committed), duplicates never reach it — one event, one
+        # indexing. shared_doc is skipped by the vector layer itself (the
+        # attachment processor indexes the full document text); a failure
+        # leaves indexed_at unset for the loop's backfill to retry.
+        if self._indexer is not None:
+            try:
+                await self._indexer.index_event(
+                    event_id,
+                    source,
+                    kind,
+                    stored_payload,
+                    occurred_at or datetime.now(tz=UTC),
+                )
+            except Exception:
+                log.warning(
+                    "indexing failed for event %s — backfill will retry", event_id, exc_info=True
+                )
         return IngestResult(stored=True, reason="new", event_id=event_id)
 
     # -- reads ----------------------------------------------------------------
