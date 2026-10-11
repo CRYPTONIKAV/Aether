@@ -31,10 +31,10 @@ import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from ..composio_bridge import SERVER_ENTRY, SERVER_NAME, ComposioBridge
 from ..authz.approvals import APPROVED, DENIED, Approval, Approvals
 from ..authz.audit import AuditLog, verification_text
 from ..authz.policy import Decision, Policy
+from ..composio_bridge import SERVER_ENTRY, SERVER_NAME, ComposioBridge
 from ..config import AppConfig, PollTool
 from ..config_store import ConfigManager
 from ..config_store import actions_word as _actions_word
@@ -48,7 +48,7 @@ from ..connectors.mcp_host import MCPHost
 from ..connectors.registry import ToolRegistry
 from ..llm.agent import run_tool_loop
 from ..llm.registry import ProviderRegistry
-from ..llm.types import PLAIN_PARAM, Message, ToolCall, ToolResult
+from ..llm.types import PLAIN_PARAM, Message, ToolCall, ToolResult, ToolSpec
 from ..memory.context import ContextBuilder
 from ..memory.entities import Sender
 from ..memory.events import Event, EventStore
@@ -102,7 +102,7 @@ _MAX_HISTORY_CHARS = 12_000
 _TRANSCRIPT_MESSAGES = 20
 
 
-def _window_history(messages: list["Message"], keep_head: int = 1) -> list["Message"]:
+def _window_history(messages: list[Message], keep_head: int = 1) -> list[Message]:
     """Bound a turn's input history so repeated LLM calls stay cheap.
 
     Pins the first `keep_head` messages (the context block, when one was
@@ -112,14 +112,15 @@ def _window_history(messages: list["Message"], keep_head: int = 1) -> list["Mess
     if len(messages) <= _MAX_HISTORY_MESSAGES:
         windowed = list(messages)
     else:
-        windowed = messages[:keep_head] + messages[-(_MAX_HISTORY_MESSAGES - keep_head):]
+        windowed = messages[:keep_head] + messages[-(_MAX_HISTORY_MESSAGES - keep_head) :]
 
-    def size(ms: list["Message"]) -> int:
+    def size(ms: list[Message]) -> int:
         return sum(len(m.text) for m in ms)
 
     while len(windowed) > keep_head + 1 and size(windowed) > _MAX_HISTORY_CHARS:
         del windowed[keep_head]  # oldest after the pinned head
     return windowed
+
 
 # the words that make a reply a question about the message it answers —
 # anything else replies normally and the model handles it
@@ -574,9 +575,7 @@ class AgentLoop:
         # interruption instead of a drip
         if self._held and not self._quiet_now():
             held, self._held = self._held, []
-            await self._surfaces.send_to_user(
-                "While it was quiet:\n\n" + "\n\n".join(held)
-            )
+            await self._surfaces.send_to_user("While it was quiet:\n\n" + "\n\n".join(held))
 
         if not messages and not observations:
             return  # a quiet tick: no LLM turn, no tokens spent
@@ -690,10 +689,7 @@ class AgentLoop:
             reply = await self._run_config_command(text)
         except Exception:
             log.exception("/config failed")
-            reply = (
-                "that didn't work — the configuration is untouched. "
-                "Nothing else is affected."
-            )
+            reply = "that didn't work — the configuration is untouched. Nothing else is affected."
         # solicited — the user asked, so it never waits out quiet hours
         await self._surfaces.send_to_user(reply)
         return True
@@ -816,8 +812,7 @@ class AgentLoop:
                 lines.append(f"· {server.name} — connected · {_actions_word(count)}")
             else:
                 lines.append(
-                    f"· {server.name} — still connecting — I'll tell you "
-                    "the moment it's up"
+                    f"· {server.name} — still connecting — I'll tell you the moment it's up"
                 )
         head = "your apps:\n" + "\n".join(lines) if lines else "your apps: nothing connected yet."
         return f"{head}\nthe gate: reads run free — sends, deletes and anything new ask first."
@@ -856,9 +851,7 @@ class AgentLoop:
         if bridge is None:
             return None
         try:
-            entry = next(
-                (s for s in self._config.mcp_servers if s.name == SERVER_NAME), None
-            )
+            entry = next((s for s in self._config.mcp_servers if s.name == SERVER_NAME), None)
             reply = ""
             if entry is None:
                 reply = await self._apply_config(
@@ -919,9 +912,7 @@ class AgentLoop:
         if walk is None or not walk.alive:
             walk = self._new_apps_wizard()
             self._apps_walk = walk
-        await self._surfaces.send_to_user(
-            walk.enter_permissions(app.toolkit, app.identity)
-        )
+        await self._surfaces.send_to_user(walk.enter_permissions(app.toolkit, app.identity))
 
     async def _try_explain_reply(self, message: InboundMessage) -> bool:
         """A reply that is just 'why?' (or 'explain') about one of my own
@@ -1080,9 +1071,7 @@ class AgentLoop:
             gained = self._tools.server_action_count(name) - before[name]
             if gained > 0:
                 word = "action" if gained == 1 else "actions"
-                await self._surfaces.send_to_user(
-                    f"{name} — {gained} new {word} in my vocabulary"
-                )
+                await self._surfaces.send_to_user(f"{name} — {gained} new {word} in my vocabulary")
 
     # -- the hub watchdog ---------------------------------------------------------
 
@@ -1097,9 +1086,7 @@ class AgentLoop:
         the outage is Composio's and only its own recovery ends it."""
         if self._composio is None or self._host is None:
             return
-        conn = next(
-            (c for c in self._host.connections if c.name == SERVER_NAME), None
-        )
+        conn = next((c for c in self._host.connections if c.name == SERVER_NAME), None)
         if conn is None or conn.ready:
             self._hub_unready_since = None
             return
@@ -1257,7 +1244,7 @@ class AgentLoop:
             if message.reply_to_text:
                 # so the model can see *which* of its own messages is being
                 # answered when the platform hands the text over
-                line += f"\n(replying to my earlier message: \"{message.reply_to_text[:200]}\")"
+                line += f'\n(replying to my earlier message: "{message.reply_to_text[:200]}")'
             history.append(Message.user(line))
         history = _window_history(history, keep_head=1 if context_block else 0)
 
@@ -1295,18 +1282,41 @@ class AgentLoop:
         # excludes them)
         trigger_text = " ".join(
             [m.text for m in messages]
-            + [f"{e.source} {e.kind} {json.dumps(e.payload, default=str)[:200]}" for e in observations]
+            + [
+                f"{e.source} {e.kind} {json.dumps(e.payload, default=str)[:200]}"
+                for e in observations
+            ]
         )
         unlocked: set[str] = set()
 
+        # the agent's own acts this turn is being told about: a tool whose
+        # outcome just arrived. On a turn nobody asked for, re-proposing
+        # one is a loop, not a new request — the executor refuses to park
+        # it again (see _execute), so one carried-out ask never repeats.
+        # A turn with a message in it never builds this map: the user
+        # typing "send it again" is a fresh request and must be heard.
+        settled: dict[str, str] = {}
+        if not messages:
+            for event in observations:
+                if event.source != "agent" or not isinstance(event.payload, dict):
+                    continue
+                tool = event.payload.get("tool")
+                if isinstance(tool, str) and tool:
+                    settled[tool] = str(
+                        event.payload.get("plain")
+                        or describe_call(tool, event.payload.get("params"))
+                    )
+
         def _gate(active: set[str], so_far: list[Message]) -> list[ToolSpec]:
-            said = trigger_text + " " + " ".join(
-                m.text + " " + " ".join(c.name for c in m.tool_calls) for m in so_far
+            said = (
+                trigger_text
+                + " "
+                + " ".join(m.text + " " + " ".join(c.name for c in m.tool_calls) for m in so_far)
             )
             return self._tools.gated_specs(said, unlocked=active | unlocked)
 
         async def _execute_unlocking(call: ToolCall) -> ToolResult:
-            result = await self._execute(call, trace=calls)
+            result = await self._execute(call, trace=calls, settled=settled)
             if call.name == "search_tools":
                 # re-run the same search the handler did and offer its
                 # matches on the next iteration — the result text itself
@@ -1367,9 +1377,7 @@ class AgentLoop:
             # run are already in `calls` (filled by reference), so a partial
             # record still answers "what were you doing?"
             reasoning = [
-                m.text.strip()
-                for m in full_history
-                if m.role == "assistant" and m.text.strip()
+                m.text.strip() for m in full_history if m.role == "assistant" and m.text.strip()
             ]
             if reasoning and reply and reasoning[-1] == reply:
                 reasoning.pop()  # the reply is stored as its own field
@@ -1501,6 +1509,7 @@ class AgentLoop:
         call: ToolCall,
         trace: list[dict[str, Any]] | None = None,
         origin: str | None = None,
+        settled: dict[str, str] | None = None,
     ) -> ToolResult:
         """The single choke point between a proposal and the world. `trace`,
         when given, is the call-record list of the decision trace being
@@ -1509,7 +1518,10 @@ class AgentLoop:
         `origin`, when given, is the loop-internal marker for a change the
         user just drove in chat — it never rides a model proposal, so the
         policy can let a walk-driven connect through without widening
-        anything else.
+        anything else. `settled`, when given, maps a tool name to the plain
+        sentence of the outcome this turn was just told about — an
+        unprompted turn passes it so a re-proposal of an act that already
+        ran is refused instead of parked again.
 
         A call the namespace cannot run never parks: the user is not asked
         to consent to certain failure — it comes back in the same plain
@@ -1537,8 +1549,10 @@ class AgentLoop:
                 outcome=ruling.reason,
             )
             result = ToolResult(
-                tool_call_id=call.id, name=call.name,
-                content=f"denied by policy: {ruling.reason}", is_error=True,
+                tool_call_id=call.id,
+                name=call.name,
+                content=f"denied by policy: {ruling.reason}",
+                is_error=True,
             )
             self._note_call(trace, call, result, ruling=ruling, audit_seq=seq)
             return result
@@ -1548,15 +1562,19 @@ class AgentLoop:
                 content = await self._tools.execute(call.name, call.arguments)
             except UnknownToolError:
                 result = ToolResult(
-                    tool_call_id=call.id, name=call.name,
-                    content=self._plain_unavailable(call.name), is_error=True,
+                    tool_call_id=call.id,
+                    name=call.name,
+                    content=self._plain_unavailable(call.name),
+                    is_error=True,
                 )
                 self._note_call(trace, call, result, ruling=ruling)
                 return result
             except ConnectorUnavailableError:
                 result = ToolResult(
-                    tool_call_id=call.id, name=call.name,
-                    content=self._plain_unresponsive(call.name), is_error=True,
+                    tool_call_id=call.id,
+                    name=call.name,
+                    content=self._plain_unresponsive(call.name),
+                    is_error=True,
                 )
                 self._note_call(trace, call, result, ruling=ruling)
                 return result
@@ -1578,11 +1596,49 @@ class AgentLoop:
         # the trace keeps the exact call.
         if self._tools.get(call.name) is None:
             result = ToolResult(
-                tool_call_id=call.id, name=call.name,
-                content=self._plain_unavailable(call.name), is_error=True,
+                tool_call_id=call.id,
+                name=call.name,
+                content=self._plain_unavailable(call.name),
+                is_error=True,
             )
             self._note_call(trace, call, result, ruling=ruling)
             return result
+
+        # a call this unprompted turn was just told the outcome of: it
+        # already ran (or was already answered) and the user heard the
+        # result. Parking it again is how one approved send becomes a
+        # loop of identical asks — the guard is code, because the parked
+        # result's "do not propose this call again" only lives in the
+        # turn that parked it, which a later turn never sees again.
+        if settled and call.name in settled:
+            result = ToolResult(
+                tool_call_id=call.id,
+                name=call.name,
+                content=(
+                    f"already settled — {settled[call.name]}. "
+                    "Do not propose it again."
+                ),
+            )
+            self._note_call(trace, call, result, ruling=ruling)
+            return result
+
+        # the same call parked earlier this turn: the model repeating
+        # itself must not put the same question in front of the user
+        # twice — the second proposal gets the first's held answer
+        if trace:
+            for entry in trace:
+                if (
+                    entry.get("approval_id") is not None
+                    and entry.get("name") == call.name
+                    and entry.get("params") == call.arguments
+                ):
+                    result = ToolResult(
+                        tool_call_id=call.id,
+                        name=call.name,
+                        content=str(entry.get("result", "")),
+                    )
+                    self._note_call(trace, call, result, ruling=ruling)
+                    return result
 
         # REQUIRE_APPROVAL: park it, ask, and let the turn go on
         approval = await self._approvals.create(
@@ -1591,9 +1647,7 @@ class AgentLoop:
             rules_matched=ruling.matched_rule,
             note=ruling.reason,
         )
-        await self._surfaces.present_approval(
-            approval.id, describe_ask(call.name, call.arguments)
-        )
+        await self._surfaces.present_approval(approval.id, describe_ask(call.name, call.arguments))
         result = ToolResult(
             tool_call_id=call.id,
             name=call.name,
@@ -1650,8 +1704,7 @@ class AgentLoop:
             trace["result"] = str(exc)
             trace["is_error"] = True
             trace["chat_refs"] = await self._surfaces.send_to_user(
-                f"the approved action couldn't run — "
-                f"{self._plain_unavailable(approval.tool_name)}"
+                f"the approved action couldn't run — {self._plain_unavailable(approval.tool_name)}"
             )
         except ConnectorUnavailableError as exc:
             log.warning("approved call %s can't run: %s", approval.tool_name, exc)
@@ -1659,8 +1712,7 @@ class AgentLoop:
             trace["result"] = str(exc)
             trace["is_error"] = True
             trace["chat_refs"] = await self._surfaces.send_to_user(
-                f"the approved action couldn't run — "
-                f"{self._plain_unresponsive(approval.tool_name)}"
+                f"the approved action couldn't run — {self._plain_unresponsive(approval.tool_name)}"
             )
         except Exception as exc:
             log.exception("approved call %s failed to run", approval.tool_name)
@@ -1755,9 +1807,7 @@ class AgentLoop:
 
     # -- traces -------------------------------------------------------------------
 
-    async def _save_trace(
-        self, *, kind: str, label: str, payload: dict[str, Any]
-    ) -> None:
+    async def _save_trace(self, *, kind: str, label: str, payload: dict[str, Any]) -> None:
         """Persist one trace. Traces are bookkeeping, never a participant:
         if the store isn't wired or the write fails, the act the trace
         records has already happened and stays untouched."""
@@ -1769,9 +1819,7 @@ class AgentLoop:
             log.exception("failed to persist %s trace — the act stands", kind)
 
     @staticmethod
-    def _trace_label(
-        messages: list[InboundMessage], observations: list[Event]
-    ) -> str:
+    def _trace_label(messages: list[InboundMessage], observations: list[Event]) -> str:
         """One human line for the trace list: the message that drove the
         turn, or what was seen if the turn was observation-only."""
         if messages:
