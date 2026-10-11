@@ -40,14 +40,10 @@ class SecretStore:
         )
 
     async def get(self, name: str) -> str | None:
-        row = await self._pool.fetchrow(
-            "SELECT value_enc FROM app_secrets WHERE name = $1", name
-        )
+        row = await self._pool.fetchrow("SELECT value_enc FROM app_secrets WHERE name = $1", name)
         if row is None:
             return None
-        return self._cipher.decrypt_text(
-            bytes(row["value_enc"]), f"app_secrets:value:{name}"
-        )
+        return self._cipher.decrypt_text(bytes(row["value_enc"]), f"app_secrets:value:{name}")
 
     async def names(self) -> set[str]:
         """Which key names exist right now — names only, never values."""

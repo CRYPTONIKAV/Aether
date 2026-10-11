@@ -30,9 +30,7 @@ ShowFn = Callable[[str | None], Awaitable[str]]
 # what config.yaml holds at a path — the value a reset returns to
 YamlValueFn = Callable[[str], Any]
 
-_CANCEL_WORDS = frozenset(
-    {"stop", "cancel", "done", "quit", "exit", "nevermind", "never mind"}
-)
+_CANCEL_WORDS = frozenset({"stop", "cancel", "done", "quit", "exit", "nevermind", "never mind"})
 _IDLE_SECONDS = 15 * 60  # a walk nobody answers stops intercepting messages
 _MAX_MENU_TOKEN = 24  # longer than this at a menu is a changed subject
 
@@ -40,14 +38,13 @@ _MAX_MENU_TOKEN = 24  # longer than this at a menu is a changed subject
 _STRIP_TAIL = "\"'.),!;"
 
 _TOP_MENU = (
-    "let's set me up — answer each question with a number, or \"stop\" any time.\n"
+    'let\'s set me up — answer each question with a number, or "stop" any time.\n'
     "1 — see my settings\n"
     "2 — change something\n"
     "3 — put something back the way config.yaml had it"
 )
 _AGAIN = (
-    "anything else? 1 — see my settings  2 — change something  "
-    "3 — reset something  (or \"done\")"
+    'anything else? 1 — see my settings  2 — change something  3 — reset something  (or "done")'
 )
 _GOODBYE = "ok — anytime. /config to start again."
 _MCP_TAIL = (
@@ -139,37 +136,49 @@ _SECTIONS: tuple[_Section, ...] = (
         "the model I think with",
         (
             _Setting(
-                "llm.provider", "provider", "who makes me think",
+                "llm.provider",
+                "provider",
+                "who makes me think",
                 "who should make me think? (currently {cur} — heads-up: "
                 "llm changes restart me, back in a few seconds)\n"
-                "1 — anthropic\n2 — openai\n3 — gemini\n4 — ollama\n5 — nvidia_nim",
-                (("anthropic", "anthropic"), ("openai", "openai"),
-                 ("gemini", "gemini"), ("ollama", "ollama"),
-                 ("nvidia_nim", "nvidia_nim")),
+                "1 — anthropic\n2 — openai\n3 — gemini\n4 — ollama",
+                (
+                    ("anthropic", "anthropic"),
+                    ("openai", "openai"),
+                    ("gemini", "gemini"),
+                    ("ollama", "ollama"),
+                ),
             ),
             _Setting(
-                "llm.model", "model", "the model I think with",
+                "llm.model",
+                "model",
+                "the model I think with",
                 "which model? (currently {cur} — heads-up: llm changes "
                 "restart me, back in a few seconds)",
             ),
             _Setting(
-                "llm.vision_model", "vision_model", "a separate model that reads images",
-                "which model should read images? (currently {cur} — or none "
-                "to use my main model)",
+                "llm.vision_model",
+                "vision_model",
+                "a separate model that reads images",
+                "which model should read images? (currently {cur} — or none to use my main model)",
             ),
             _Setting(
-                "llm.salience_model", "salience_model",
+                "llm.salience_model",
+                "salience_model",
                 "a cheaper model for scoring what matters",
                 "which cheaper model should score what matters? (currently "
                 "{cur} — or none to use my main model)",
             ),
             _Setting(
-                "llm.ollama_vision", "ollama_vision",
+                "llm.ollama_vision",
+                "ollama_vision",
                 "ollama only: whether my model reads images",
                 "does your ollama model read images — on or off? (currently {cur})",
             ),
             _Setting(
-                "llm.max_tokens", "max_tokens", "how much room my answers get",
+                "llm.max_tokens",
+                "max_tokens",
+                "how much room my answers get",
                 "how much room do my answers get, in tokens? (currently {cur})",
             ),
         ),
@@ -179,28 +188,33 @@ _SECTIONS: tuple[_Section, ...] = (
         "my rhythm: how often I check, how much I do",
         (
             _Setting(
-                "agent.tick_seconds", "tick_seconds", "seconds between my checks",
+                "agent.tick_seconds",
+                "tick_seconds",
+                "seconds between my checks",
                 "how many seconds between checks? (currently {cur})",
             ),
             _Setting(
-                "agent.max_tool_iterations", "max_tool_iterations",
+                "agent.max_tool_iterations",
+                "max_tool_iterations",
                 "tool calls I may chain in one turn",
                 "how many tool calls may I chain in one turn? (currently {cur})",
             ),
             _Setting(
-                "agent.daily_surface_cap", "daily_surface_cap",
+                "agent.daily_surface_cap",
+                "daily_surface_cap",
                 "most things I bring up unprompted per day",
-                "at most how many things should I bring up unprompted per day? "
-                "(currently {cur})",
+                "at most how many things should I bring up unprompted per day? (currently {cur})",
             ),
             _Setting(
-                "agent.quiet_hours", "quiet_hours",
+                "agent.quiet_hours",
+                "quiet_hours",
                 "hours I hold non-urgent notes",
                 "which hours should I hold non-urgent notes? like 23:00-07:00, "
                 "or none to clear (currently {cur})",
             ),
             _Setting(
-                "agent.quiet_urgent_salience", "quiet_urgent_salience",
+                "agent.quiet_urgent_salience",
+                "quiet_urgent_salience",
                 "how urgent something must be to interrupt quiet",
                 "during quiet hours, how urgent (0-10) must something be to "
                 "reach you? (currently {cur})",
@@ -212,16 +226,16 @@ _SECTIONS: tuple[_Section, ...] = (
         "what's worth your attention",
         (
             _Setting(
-                "salience.threshold", "threshold",
+                "salience.threshold",
+                "threshold",
                 "how interesting something must be to reach you",
-                "how interesting (0-10) must something be to reach you? "
-                "(currently {cur})",
+                "how interesting (0-10) must something be to reach you? (currently {cur})",
             ),
             _Setting(
-                "salience.rate_cap_per_hour", "rate_cap_per_hour",
+                "salience.rate_cap_per_hour",
+                "rate_cap_per_hour",
                 "events past this an hour are noise",
-                "how many events an hour before I treat them as noise? "
-                "(currently {cur})",
+                "how many events an hour before I treat them as noise? (currently {cur})",
             ),
         ),
     ),
@@ -231,14 +245,19 @@ _SECTIONS: tuple[_Section, ...] = (
         "who I'm allowed to see",
         (
             _Setting(
-                "contacts.mode", "mode", "whether I see everyone or only the allowlist",
+                "contacts.mode",
+                "mode",
+                "whether I see everyone or only the allowlist",
                 "who may I see?\n1 — off — everyone\n2 — enforce — only the people "
                 "on the allowlist\n(currently {cur})",
                 (("off", "off"), ("enforce", "enforce")),
             ),
             _Setting(
-                "contacts.allowlist", "allowlist", "who I'm allowed to see",
-                "", flow="allowlist",
+                "contacts.allowlist",
+                "allowlist",
+                "who I'm allowed to see",
+                "",
+                flow="allowlist",
             ),
         ),
     ),
@@ -247,15 +266,17 @@ _SECTIONS: tuple[_Section, ...] = (
         "my permission gate",
         (
             _Setting(
-                "authz.rules", "rules",
+                "authz.rules",
+                "rules",
                 "extra allow/approve/deny decisions ahead of the built-ins",
-                "", flow="rules",
+                "",
+                flow="rules",
             ),
             _Setting(
-                "authz.approval_ttl_hours", "approval_ttl_hours",
+                "authz.approval_ttl_hours",
+                "approval_ttl_hours",
                 "how long approvals wait before expiring",
-                "how many hours before an un-answered approval expires? "
-                "(currently {cur})",
+                "how many hours before an un-answered approval expires? (currently {cur})",
             ),
         ),
     ),
@@ -583,8 +604,9 @@ class ConfigWizard:
                 self._stage = "al_platform"
                 return "which platform? (telegram, discord, slack — or * for any)"
             self._stage = "az_pattern"
-            return ("which tool calls does it cover? (a pattern, like "
-                    "telegram__send or .*__delete.*)")
+            return (
+                "which tool calls does it cover? (a pattern, like telegram__send or .*__delete.*)"
+            )
         if pick == 2:
             return self._enter_remove()
         return self._to_menu()
@@ -642,8 +664,10 @@ class ConfigWizard:
             return "just the pattern, no spaces — like telegram__send or .*__delete.*"
         self._pending["pattern"] = pattern
         self._stage = "az_decision"
-        return ("should those be allowed without asking, held for your tap, "
-                "or denied?\n1 — allow  2 — approve (one tap)  3 — deny")
+        return (
+            "should those be allowed without asking, held for your tap, "
+            "or denied?\n1 — allow  2 — approve (one tap)  3 — deny"
+        )
 
     def _answer_az_decision(self, text: str) -> str | None:
         words = text.strip().lower().split()
@@ -687,7 +711,9 @@ class ConfigWizard:
         for i, app in enumerate(apps, 1):
             polls = len(app.poll_tools)
             poll_word = "poll" if polls == 1 else "polls"
-            lines.append(f"{i} — {app.name} ({'on' if app.enabled else 'off'}, {polls} {poll_word})")
+            lines.append(
+                f"{i} — {app.name} ({'on' if app.enabled else 'off'}, {polls} {poll_word})"
+            )
         n = len(apps)
         if self._mode == "change":
             lines.append(f"{n + 1} — add an app  {n + 2} — remove an app  {n + 3} — back")
@@ -710,9 +736,7 @@ class ConfigWizard:
             if self._mode == "reset":
                 self._reset_path = f"mcp_servers.{app.name}.enabled"
                 self._stage = "confirm_reset"
-                return (
-                    f"put {app.name} back the way config.yaml had it?\n1 — yes  2 — no"
-                )
+                return f"put {app.name} back the way config.yaml had it?\n1 — yes  2 — no"
             self._stage = "mcp_onoff"
             return f"turn {app.name} on or off? (currently {'on' if app.enabled else 'off'})"
         if self._mode == "change" and pick == len(apps) + 1:
@@ -749,9 +773,9 @@ class ConfigWizard:
             return "just the name — one word, like mail or calendar"
         self._pending["name"] = name
         self._stage = "mcp_kind"
-        return (f"how does {name} connect?\n"
-                "1 — stdio — a command run locally\n"
-                "2 — http — a URL I call")
+        return (
+            f"how does {name} connect?\n1 — stdio — a command run locally\n2 — http — a URL I call"
+        )
 
     def _answer_mcp_kind(self, text: str) -> str | None:
         words = text.strip().lower().split()
@@ -780,7 +804,10 @@ class ConfigWizard:
                 return "that command didn't parse — check the quotes and try again"
             if not parts:
                 return "what's the command? (e.g. npx -y mcp-mail-server)"
-            value = {"name": name, "transport": {"type": "stdio", "command": parts[0], "args": parts[1:]}}
+            value = {
+                "name": name,
+                "transport": {"type": "stdio", "command": parts[0], "args": parts[1:]},
+            }
         else:
             url = text.strip()
             if not url or " " in url:

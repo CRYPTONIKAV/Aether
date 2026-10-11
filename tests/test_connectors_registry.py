@@ -138,17 +138,13 @@ async def test_a_doubly_escaped_newline_is_fixed_the_same_way() -> None:
 async def test_the_transform_is_idempotent() -> None:
     # the approval path re-executes stored params — the second pass must be a no-op
     registry, host = _gmail_registry()
-    await registry.execute(
-        "composio__GMAIL_SEND_EMAIL", {"body": "hi<br>there", "is_html": True}
-    )
+    await registry.execute("composio__GMAIL_SEND_EMAIL", {"body": "hi<br>there", "is_html": True})
     assert host.calls[0][1] == {"body": "hi<br>there", "is_html": True}
 
 
 async def test_bodies_without_newlines_pass_through_untouched() -> None:
     registry, host = _gmail_registry()
-    await registry.execute(
-        "composio__GMAIL_SEND_EMAIL", {"body": "one line", "is_html": False}
-    )
+    await registry.execute("composio__GMAIL_SEND_EMAIL", {"body": "one line", "is_html": False})
     assert host.calls[0][1] == {"body": "one line", "is_html": False}
 
 
@@ -198,10 +194,20 @@ async def test_drop_server_removes_only_that_servers_tools() -> None:
 def _gated_registry() -> ToolRegistry:
     registry = ToolRegistry()
     registry.add_native(_native("memory_search"), _echo_handler)
-    host = FakeHost([
-        ToolSpec(name="hub__GMAIL_SEND_EMAIL", description="Send an email to a recipient", source="hub"),
-        ToolSpec(name="hub__CALENDAR_LIST_EVENTS", description="List events from your calendar", source="hub"),
-    ])
+    host = FakeHost(
+        [
+            ToolSpec(
+                name="hub__GMAIL_SEND_EMAIL",
+                description="Send an email to a recipient",
+                source="hub",
+            ),
+            ToolSpec(
+                name="hub__CALENDAR_LIST_EVENTS",
+                description="List events from your calendar",
+                source="hub",
+            ),
+        ]
+    )
     registry.attach_mcp(host)
     registry.sync_mcp_tools()
     return registry
@@ -211,7 +217,10 @@ def test_gate_ignores_stopwords_from_message_prefixes() -> None:
     registry = _gated_registry()
     # "[message from X via Y]" hands the gate from/via/you for free — those
     # must not match the same filler words in every prose description
-    offered = {s.name for s in registry.gated_specs("[message from sam via telegram]\ncan you check this for me")}
+    offered = {
+        s.name
+        for s in registry.gated_specs("[message from sam via telegram]\ncan you check this for me")
+    }
     assert offered == {"memory_search"}  # natives only
 
 

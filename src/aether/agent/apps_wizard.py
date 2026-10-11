@@ -48,9 +48,7 @@ FindToolkitsFn = Callable[[str], Awaitable[list[tuple[str, str]]]]
 # toolkit slug -> (request id, connect link); None when the hub said no
 AuthorizeFn = Callable[[str], Awaitable[tuple[str, str] | None]]
 
-_CANCEL_WORDS = frozenset(
-    {"stop", "cancel", "done", "quit", "exit", "nevermind", "never mind"}
-)
+_CANCEL_WORDS = frozenset({"stop", "cancel", "done", "quit", "exit", "nevermind", "never mind"})
 _IDLE_SECONDS = 15 * 60  # a walk nobody answers stops intercepting messages
 _MAX_MENU_TOKEN = 24  # longer than this at a menu is a changed subject
 _STRIP_TAIL = "\"'.),!;"
@@ -59,10 +57,7 @@ _ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _GOODBYE = "ok — anytime. /apps to start again."
 _NOT_A_VALUE = "just the value itself — paste only the value"
 _MENU_NUMBER = "that's a menu number — paste the key's value itself"
-_LINK_WAITING = (
-    "still waiting — open the link I sent and approve it there; "
-    "say stop to give up."
-)
+_LINK_WAITING = "still waiting — open the link I sent and approve it there; say stop to give up."
 _ADD_HINT = "add one with /apps add <name> — like /apps add gmail"
 
 
@@ -298,9 +293,7 @@ class AppsWizard:
         self._stage = "generic_kind"
         name = self._generic_name
         return (
-            f"how does {name} connect?\n"
-            "1 — stdio — a command run locally\n"
-            "2 — http — a URL I call"
+            f"how does {name} connect?\n1 — stdio — a command run locally\n2 — http — a URL I call"
         )
 
     # -- the hub connect: key once, link per app, permissions last --------------------
@@ -424,7 +417,7 @@ class AppsWizard:
                 verb = "isn't" if len(missing) == 1 else "aren't"
                 return (
                     f"not yet — {names} {verb} set. paste {word} here, or "
-                    "add to .env and reply \"done\"."
+                    'add to .env and reply "done".'
                 )
             head = f"the key's there — connecting {recipe.name} now."
             return await self._finish_keys(recipe, head)
@@ -444,7 +437,7 @@ class AppsWizard:
         if not stored:
             return (
                 "that didn't work — nothing was stored. add "
-                f"{name} to .env and reply \"done\", or paste it again."
+                f'{name} to .env and reply "done", or paste it again.'
             )
         self._paste_names.pop(0)
         if self._paste_names:
@@ -563,7 +556,7 @@ class AppsWizard:
         self._stage = "generic_env"
         return (
             f"does {name} need a key or token? reply with the key's name "
-            "(like WEATHER_API_KEY), or \"none\""
+            '(like WEATHER_API_KEY), or "none"'
         )
 
     async def _answer_generic_env(self, text: str) -> str | None:
@@ -575,7 +568,7 @@ class AppsWizard:
         if self._changed_subject(text):
             self._stage = "dead"
             return None
-        return "just the key's name (like WEATHER_API_KEY) — or \"none\""
+        return 'just the key\'s name (like WEATHER_API_KEY) — or "none"'
 
     def _generic_recipe(self, env_names: tuple[str, ...]) -> AppRecipe:
         """The generic walk's answers as one recipe — the written config

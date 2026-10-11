@@ -188,8 +188,7 @@ class Policy:
         return Ruling(
             Decision.ALLOW,
             "builtin:walk-connect",
-            "an app connect the user just drove in chat — the "
-            "pick-and-paste is the approval",
+            "an app connect the user just drove in chat — the pick-and-paste is the approval",
         )
 
     @staticmethod
@@ -216,6 +215,5 @@ class Policy:
         return Ruling(
             Decision.REQUIRE_APPROVAL,
             "builtin:config-security",
-            "an unrecognized config path can never apply silently — held "
-            "for the user to look at",
+            "an unrecognized config path can never apply silently — held for the user to look at",
         )

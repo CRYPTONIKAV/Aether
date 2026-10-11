@@ -16,7 +16,17 @@ import pytest
 
 pytestmark = pytest.mark.e2e
 
-PAGES = ["activity", "attention", "tasks", "memory", "audit", "traces", "policy", "apps", "settings"]
+PAGES = [
+    "activity",
+    "attention",
+    "tasks",
+    "memory",
+    "audit",
+    "traces",
+    "policy",
+    "apps",
+    "settings",
+]
 
 RAW_PATTERNS = [
     # composio names are UPPER_SNAKE after the __, so the suffix can't be lowercase-only
@@ -106,7 +116,7 @@ def test_plain_renderings_against_the_fixture(page, live_server, token) -> None:
     assert "log_id" not in text
     assert "successful" not in text
     # a legacy agent event without `plain` is backfilled by the real route
-    assert "Aether · Sending a message (to @sam)" in text
+    assert "Aether · Sent the message (to @sam)" in text
 
     page.goto(f"{live_server}/#/attention")
     page.wait_for_selector('[data-testid="approval-card"]')

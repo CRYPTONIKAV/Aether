@@ -116,18 +116,14 @@ async def test_the_store_is_consulted_only_for_env_var_shaped_names(tmp_path) ->
     """Nothing outside the $NAME grammar can ever be shadowed by a paste —
     a lowercase name reads the file like it always did, even if a store
     row spells the same word."""
-    resolver = _resolver(
-        tmp_path, env_text="lower=from-the-file\n", secrets={"lower": "the-paste"}
-    )
+    resolver = _resolver(tmp_path, env_text="lower=from-the-file\n", secrets={"lower": "the-paste"})
     assert await resolver.resolve("lower") == "from-the-file"
 
 
 # -- presence checks: names only, never values ---------------------------------------
 
 
-async def test_known_names_reports_presence_from_all_three_sources(
-    tmp_path, monkeypatch
-) -> None:
+async def test_known_names_reports_presence_from_all_three_sources(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("SOME_TEST_ENV_NAME", "a-value-nobody-should-echo")
     env_file = tmp_path / ".env"
     env_file.write_text("FROM_FILE=yes\nEMPTY=\n")

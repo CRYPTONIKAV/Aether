@@ -26,23 +26,73 @@ NativeHandler = Callable[[dict[str, Any]], Awaitable[Any]]
 # grammatical filler — without it, "[message from X via Y]" prefixes hand the
 # gate 'from'/'via'/'you', which intersect with the same words in every prose
 # tool description and pass nearly every schema through on every turn
-_STOPWORDS = frozenset({
-    "a", "an", "the", "to", "of", "in", "on", "for", "and", "or", "is",
-    "are", "was", "were", "be", "it", "its", "this", "that", "these",
-    "those", "you", "your", "me", "my", "we", "our", "i", "they", "them",
-    "from", "via", "with", "at", "by", "as", "do", "does", "did", "can",
-    "could", "will", "would", "should", "may", "might", "have", "has",
-    "not", "no", "if", "what", "which", "how", "all", "any", "some",
-})
+_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "to",
+        "of",
+        "in",
+        "on",
+        "for",
+        "and",
+        "or",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "it",
+        "its",
+        "this",
+        "that",
+        "these",
+        "those",
+        "you",
+        "your",
+        "me",
+        "my",
+        "we",
+        "our",
+        "i",
+        "they",
+        "them",
+        "from",
+        "via",
+        "with",
+        "at",
+        "by",
+        "as",
+        "do",
+        "does",
+        "did",
+        "can",
+        "could",
+        "will",
+        "would",
+        "should",
+        "may",
+        "might",
+        "have",
+        "has",
+        "not",
+        "no",
+        "if",
+        "what",
+        "which",
+        "how",
+        "all",
+        "any",
+        "some",
+    }
+)
 
 
 def _tokens(text: str) -> set[str]:
     """Significant lowercase word tokens — no stopwords, no one-char junk
     (a 1-char query would substring-match nearly every description)."""
-    return {
-        t for t in re.findall(r"[a-z0-9]+", text.lower())
-        if len(t) > 1 and t not in _STOPWORDS
-    }
+    return {t for t in re.findall(r"[a-z0-9]+", text.lower()) if len(t) > 1 and t not in _STOPWORDS}
 
 
 @dataclass(frozen=True)
@@ -205,7 +255,11 @@ class ToolRegistry:
         sync_mcp_tools: an app unlinked or disabled at runtime must not keep
         its actions callable."""
         prefix = f"{server}__"
-        names = [name for name in self._tools if name.startswith(prefix) and self._tools[name].kind == "mcp"]
+        names = [
+            name
+            for name in self._tools
+            if name.startswith(prefix) and self._tools[name].kind == "mcp"
+        ]
         for name in names:
             del self._tools[name]
         if names:

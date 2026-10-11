@@ -27,8 +27,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import uuid
 import time
+import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -188,9 +188,7 @@ class ComposioBridge:
             raise ComposioNotConfigured(f"no {API_KEY_NAME} set")
         from composio.core.models.connected_accounts import ConnectionRequest
 
-        request = await asyncio.to_thread(
-            ConnectionRequest.from_id, request_id, self._sdk.client
-        )
+        request = await asyncio.to_thread(ConnectionRequest.from_id, request_id, self._sdk.client)
         try:
             connection = await asyncio.to_thread(request.wait_for_connection, timeout)
         except Exception:
@@ -327,9 +325,7 @@ class ComposioBridge:
         session_id = None if force_new else await self._secrets.get(_SESSION_ID_NAME)
         if session_id:
             try:
-                session = await asyncio.to_thread(
-                    self._sdk.sessions.use, session_id, mcp=True
-                )
+                session = await asyncio.to_thread(self._sdk.sessions.use, session_id, mcp=True)
             except Exception:
                 log.info("stored composio session is gone — creating a fresh one")
             else:

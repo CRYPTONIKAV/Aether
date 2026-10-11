@@ -190,11 +190,7 @@ class FakeApprovals:
         # mirrors the store: pending rows past their TTL never read as
         # waiting, even before expire_overdue has flipped them
         now = datetime.now(UTC)
-        return [
-            a
-            for a in self.created
-            if a.status == PENDING and a.expires_at > now
-        ]
+        return [a for a in self.created if a.status == PENDING and a.expires_at > now]
 
     async def expire_overdue(self) -> int:
         flipped = 0
@@ -619,10 +615,14 @@ class FakeConfigManager:
     ) -> None:
         self.show_reply = show_reply
         self.set_reply = set_reply
-        self.effective_payload = effective_payload if effective_payload is not None else {
-            "sections": {},
-            "overrides": [],
-        }
+        self.effective_payload = (
+            effective_payload
+            if effective_payload is not None
+            else {
+                "sections": {},
+                "overrides": [],
+            }
+        )
         self.yaml_values = yaml_values or {}
         self.show_calls: list[str | None] = []
         self.set_calls: list[dict] = []
@@ -634,9 +634,7 @@ class FakeConfigManager:
     def yaml_value(self, path: str) -> object:
         return self.yaml_values.get(path)
 
-    async def set(
-        self, *, op: str, path: str, value: object = None, source: str = "chat"
-    ) -> str:
+    async def set(self, *, op: str, path: str, value: object = None, source: str = "chat") -> str:
         self.set_calls.append({"op": op, "path": path, "value": value, "source": source})
         return self.set_reply
 
@@ -659,13 +657,18 @@ class FakeComposioBridge:
         authorize_url: str = "https://hub.example.test/connect",
         wait_error: Exception | None = None,
     ) -> None:
-        from aether.composio_bridge import ConnectedApp, ToolkitInfo
+        from aether.composio_bridge import ToolkitInfo
 
         self.toolkit_list = list(
             toolkits
             if toolkits is not None
             else [
-                ToolkitInfo(slug="gmail", name="Gmail", logo="https://logo.test/gmail.png", description="your mail"),
+                ToolkitInfo(
+                    slug="gmail",
+                    name="Gmail",
+                    logo="https://logo.test/gmail.png",
+                    description="your mail",
+                ),
                 ToolkitInfo(slug="github", name="GitHub", logo="", description="your code"),
             ]
         )
@@ -700,9 +703,7 @@ class FakeComposioBridge:
         if exact:
             return exact[:1]
         return [
-            t
-            for t in self.toolkit_list
-            if needle in t.slug.lower() or needle in t.name.lower()
+            t for t in self.toolkit_list if needle in t.slug.lower() or needle in t.name.lower()
         ][:limit]
 
     async def authorize(self, toolkit: str) -> tuple[str, str]:

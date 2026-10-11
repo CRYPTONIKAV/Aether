@@ -47,7 +47,9 @@ def _clip(text: str, limit: int = 300) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-def _parse_int_param(params: dict[str, Any], key: str, default: int, *, minimum: int | None = None) -> int | None:
+def _parse_int_param(
+    params: dict[str, Any], key: str, default: int, *, minimum: int | None = None
+) -> int | None:
     """Parse an integer tool parameter, returning None (instead of raising)
     if the model passed something that isn't one — callers either report
     that in plain words or fall back to `default`, their choice."""
@@ -103,9 +105,13 @@ _NATIVE_WORDS: dict[str, ActionWords] = {
     "create_routine": ActionWords("Arm the routine", "arming a routine", "armed the routine"),
     "list_routines": ActionWords("List the routines", "listing routines", "listed the routines"),
     "set_routine_enabled": ActionWords(
-        "Arm or pause the routine", "pausing or re-arming a routine", "changed the routine's armed state"
+        "Arm or pause the routine",
+        "pausing or re-arming a routine",
+        "changed the routine's armed state",
     ),
-    "delete_routine": ActionWords("Delete the routine", "deleting a routine", "deleted the routine"),
+    "delete_routine": ActionWords(
+        "Delete the routine", "deleting a routine", "deleted the routine"
+    ),
     "explain_decision": ActionWords(
         "Replay the decision", "replaying a decision", "replayed the decision"
     ),
@@ -188,7 +194,8 @@ def _action_words(name: str) -> ActionWords:
         if any(action.startswith(verb) for verb in read_like):
             return ActionWords(f"Check {app}", f"checking {app}", f"checked {app}")
         return _ACTION_WORDS.get(
-            app, ActionWords(f"Run the {app} action", f"an action in {app}", f"made the {app} change")
+            app,
+            ActionWords(f"Run the {app} action", f"an action in {app}", f"made the {app} change"),
         )
     return _NATIVE_WORDS.get(
         name, ActionWords("Run the internal step", "an internal step", "ran the internal step")
@@ -271,14 +278,17 @@ def describe_call(name: str, params: Any = None) -> str:
 
 def plain_outcome(name: str, params: Any, kind: str) -> str:
     """The `plain` line for a stored agent-outcome event, by kind — the
-    doing-sentence for a run, framed for a failure or a denial."""
+    past-tense sentence for a completed run, framed for a failure or a
+    denial. A finished act must never read as one still in flight, or a
+    later turn re-drafts it as something left to do."""
     if kind == "action_failed":
         doing = describe_call(name, params)
         return f"Failed — {doing[0].lower()}{doing[1:]}"
     if kind == "action_denied":
         text = describe_denied(name, params)
         return text[:-1] if text.endswith(".") else text
-    return describe_call(name, params)
+    text = describe_outcome(name, params)
+    return text[:-1] if text.endswith(".") else text
 
 
 def with_plain_calls(payload: Any) -> Any:
@@ -315,8 +325,7 @@ def format_trace(t: Any) -> str:
     trigger = p.get("trigger") or {}
     for m in trigger.get("messages") or []:
         lines.append(
-            f"  asked: {m.get('handle', '?')} via {m.get('surface', '?')}: "
-            f"{m.get('text', '')}"
+            f"  asked: {m.get('handle', '?')} via {m.get('surface', '?')}: {m.get('text', '')}"
         )
     observations = trigger.get("observations") or []
     if observations:
@@ -332,19 +341,16 @@ def format_trace(t: Any) -> str:
     event = p.get("event")
     if event:
         lines.append(
-            f"  fired on: [{event.get('source')}/{event.get('kind')}] "
-            f"{event.get('line', '')}"
+            f"  fired on: [{event.get('source')}/{event.get('kind')}] {event.get('line', '')}"
         )
     action = p.get("action")
     if action:
         lines.append(
-            f"  scheduled: #{action.get('id')} '{action.get('label')}' "
-            f"at {action.get('run_at')}"
+            f"  scheduled: #{action.get('id')} '{action.get('label')}' at {action.get('run_at')}"
         )
     if p.get("approval_id") is not None:
         lines.append(
-            f"  approval #{p.get('approval_id')}, decided by "
-            f"{p.get('decided_by') or 'the user'}"
+            f"  approval #{p.get('approval_id')}, decided by {p.get('decided_by') or 'the user'}"
         )
     for c in p.get("calls") or []:
         gate = f"gate: {c.get('decision', '?')}"
@@ -388,7 +394,7 @@ def plain_replay(trace: Any) -> str:
     if messages:
         first = _clip(str(messages[0].get("text", "")), 200)
         more = f" (+{len(messages) - 1} more)" if len(messages) > 1 else ""
-        lines.append(f"You asked: \"{first}\"{more}")
+        lines.append(f'You asked: "{first}"{more}')
     elif p.get("routine"):
         lines.append(f"Your routine '{p['routine'].get('label')}' fired.")
     elif p.get("action"):
@@ -429,7 +435,7 @@ def plain_replay(trace: Any) -> str:
             lines.append("It ran as approved.")
 
     if p.get("reply"):
-        lines.append(f"I replied: \"{_clip(str(p['reply']), 200)}\"")
+        lines.append(f'I replied: "{_clip(str(p["reply"]), 200)}"')
 
     lines.append(
         "The full recorded detail — the exact call, the parameters, the "
@@ -574,9 +580,7 @@ def register_native_tools(
             return "set_config needs a config path — e.g. agent.tick_seconds."
         if op == "set" and "value" not in params:
             return 'set needs a value — pass "value": null to clear one.'
-        return await config_manager.set(
-            op=op, path=path, value=params.get("value"), source="tool"
-        )
+        return await config_manager.set(op=op, path=path, value=params.get("value"), source="tool")
 
     async def workspace_read(params: dict[str, Any]) -> str:
         file = str(params.get("file", "")).strip().lower()
@@ -635,7 +639,11 @@ def register_native_tools(
             return str(exc)
         except WorkspaceWriteError as exc:
             return f"not promoted — {exc}"
-        return f"Promoted {entry_id} into MEMORY.md." if ok else f"No active entry {entry_id} on {date_str}."
+        return (
+            f"Promoted {entry_id} into MEMORY.md."
+            if ok
+            else f"No active entry {entry_id} on {date_str}."
+        )
 
     async def workspace_rewrite(params: dict[str, Any]) -> str:
         file = str(params.get("file", "")).strip().lower()
@@ -791,9 +799,7 @@ def register_native_tools(
                 p = t.payload or {}
                 if p.get("approval_id") == approval_id:
                     carries.append(t)
-                elif any(
-                    c.get("approval_id") == approval_id for c in p.get("calls") or []
-                ):
+                elif any(c.get("approval_id") == approval_id for c in p.get("calls") or []):
                     origins.append(t)
             if not origins and not carries:
                 return f"No recorded trace involving approval #{approval_id}."
@@ -806,7 +812,11 @@ def register_native_tools(
                 for t in await traces.recent(50)
                 if needle
                 in " ".join(
-                    [t.kind, t.label or "", json.dumps(t.payload or {}, default=str, ensure_ascii=False)]
+                    [
+                        t.kind,
+                        t.label or "",
+                        json.dumps(t.payload or {}, default=str, ensure_ascii=False),
+                    ]
                 ).lower()
             ]
             if not found:
@@ -826,9 +836,7 @@ def register_native_tools(
         if not found:
             return f"No tools match {query!r}. The app may not be connected — try the apps page."
         lines = [f"{s.name} — {_clip(s.description, 120)}" for s in found]
-        return (
-            "Matching tools (now available to call directly this turn):\n" + "\n".join(lines)
-        )
+        return "Matching tools (now available to call directly this turn):\n" + "\n".join(lines)
 
     natives: list[tuple[ToolSpec, NativeHandler]] = [
         (
@@ -838,7 +846,10 @@ def register_native_tools(
                 "tool list — e.g. 'calendar', 'send message', 'create issue'. "
                 "Matches become callable immediately after this returns.",
                 {
-                    "query": {"type": "string", "description": "app name or action to find tools for"},
+                    "query": {
+                        "type": "string",
+                        "description": "app name or action to find tools for",
+                    },
                 },
                 ["query"],
             ),
@@ -933,11 +944,26 @@ def register_native_tools(
                         "required. Every fire passes the authorization gate.",
                         {
                             "label": {"type": "string", "description": "short human label"},
-                            "when_source": {"type": "string", "description": "event source to match, e.g. mail"},
-                            "when_kind": {"type": "string", "description": "event kind, e.g. chat_message"},
-                            "when_from": {"type": "string", "description": "sender handle to match"},
-                            "when_contains": {"type": "string", "description": "text the event must contain"},
-                            "tool_name": {"type": "string", "description": "tool to run on a match"},
+                            "when_source": {
+                                "type": "string",
+                                "description": "event source to match, e.g. mail",
+                            },
+                            "when_kind": {
+                                "type": "string",
+                                "description": "event kind, e.g. chat_message",
+                            },
+                            "when_from": {
+                                "type": "string",
+                                "description": "sender handle to match",
+                            },
+                            "when_contains": {
+                                "type": "string",
+                                "description": "text the event must contain",
+                            },
+                            "tool_name": {
+                                "type": "string",
+                                "description": "tool to run on a match",
+                            },
                             "params": {"type": "object", "description": "arguments for that tool"},
                             "cooldown_seconds": {
                                 "type": "integer",
@@ -1158,8 +1184,14 @@ def register_native_tools(
                                 "description": "user (they stated this directly) or agent "
                                 "(you inferred it) — default agent",
                             },
-                            "category": {"type": "string", "description": "fact only: section heading in MEMORY.md"},
-                            "confidence": {"type": "number", "description": "0-1, if this is an inference rather than something stated"},
+                            "category": {
+                                "type": "string",
+                                "description": "fact only: section heading in MEMORY.md",
+                            },
+                            "confidence": {
+                                "type": "number",
+                                "description": "0-1, if this is an inference rather than something stated",
+                            },
                             "supersedes": {
                                 "type": "array",
                                 "items": {"type": "string"},
@@ -1180,7 +1212,10 @@ def register_native_tools(
                         "workspace_remember instead.",
                         {
                             "file": {"type": "string", "description": "identity | soul"},
-                            "text": {"type": "string", "description": "the file's full new content"},
+                            "text": {
+                                "type": "string",
+                                "description": "the file's full new content",
+                            },
                         },
                         ["file", "text"],
                     ),
@@ -1194,9 +1229,18 @@ def register_native_tools(
                         "beyond that day. The original stays on record, "
                         "marked promoted.",
                         {
-                            "date": {"type": "string", "description": "YYYY-MM-DD the entry was written on"},
-                            "entry_id": {"type": "string", "description": "the entry's id, from workspace_search or workspace_read"},
-                            "category": {"type": "string", "description": "section heading in MEMORY.md, default 'Notes'"},
+                            "date": {
+                                "type": "string",
+                                "description": "YYYY-MM-DD the entry was written on",
+                            },
+                            "entry_id": {
+                                "type": "string",
+                                "description": "the entry's id, from workspace_search or workspace_read",
+                            },
+                            "category": {
+                                "type": "string",
+                                "description": "section heading in MEMORY.md, default 'Notes'",
+                            },
                         },
                         ["date", "entry_id"],
                     ),

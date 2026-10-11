@@ -18,23 +18,6 @@ from fakes import (
     FakeAgentSettings,
     FakeApprovals,
     FakeAudit,
-    FakeConfigManager,
-    FakeContextBuilder,
-    FakeEntities,
-    FakeEventStore,
-    FakeProvider,
-    FakeRegistry,
-    FakeRoutines,
-    FakeSalience,
-    FakeScheduler,
-    FakeSurfaceConnector,
-    FakeTraces,
-)
-
-from fakes import (
-    FakeAgentSettings,
-    FakeApprovals,
-    FakeAudit,
     FakeComposioBridge,
     FakeConfigManager,
     FakeContextBuilder,
@@ -77,11 +60,11 @@ from aether.config import (
 )
 from aether.connectors.base import InboundMessage
 from aether.connectors.registry import ToolRegistry
-from aether.llm.types import ToolCall, ToolSpec, Turn
+from aether.llm.types import ToolCall, ToolResult, ToolSpec, Turn
 from aether.memory.events import Event, IngestResult
 from aether.scheduler.jobs import ScheduledAction
-from aether.workspace import Workspace
 from aether.secret_env import EnvResolver
+from aether.workspace import Workspace
 
 
 def _msg(
@@ -92,8 +75,12 @@ def _msg(
     reply_to_text: str = "",
 ) -> InboundMessage:
     return InboundMessage(
-        surface=surface, handle=handle, text=text, chat_ref="1",
-        reply_to_id=reply_to_id, reply_to_text=reply_to_text,
+        surface=surface,
+        handle=handle,
+        text=text,
+        chat_ref="1",
+        reply_to_id=reply_to_id,
+        reply_to_text=reply_to_text,
     )
 
 
@@ -245,7 +232,9 @@ async def test_a_call_without_plain_gets_the_backend_sentence() -> None:
     kit.add_tool("mail__list_messages", result="2 unread")
     trace: list[dict] = []
 
-    await kit.loop._execute(ToolCall(id="t1", name="mail__list_messages", arguments={}), trace=trace)
+    await kit.loop._execute(
+        ToolCall(id="t1", name="mail__list_messages", arguments={}), trace=trace
+    )
     assert trace[0]["plain"] == "Checking mail"
 
 
@@ -345,9 +334,7 @@ async def test_a_denied_action_is_remembered_as_denied() -> None:
     kit = LoopKit(None)
     kit.add_tool("mail__send_message")
 
-    await kit.loop._execute(
-        ToolCall(id="t1", name="mail__send_message", arguments={"to": "a@b.c"})
-    )
+    await kit.loop._execute(ToolCall(id="t1", name="mail__send_message", arguments={"to": "a@b.c"}))
     approval = kit.approvals.created[0]
     approval.status = DENIED
 
@@ -359,9 +346,7 @@ async def test_a_denied_action_is_remembered_as_denied() -> None:
 
 async def test_a_failed_carry_out_is_remembered_as_failed() -> None:
     kit = LoopKit(None)
-    approval = await kit.approvals.create(
-        tool_name="gmail__send_message", params={"to": "a@b.c"}
-    )
+    approval = await kit.approvals.create(tool_name="gmail__send_message", params={"to": "a@b.c"})
     approval.status = APPROVED
 
     await kit.loop.execute_decision(approval.id, APPROVED)
@@ -369,6 +354,123 @@ async def test_a_failed_carry_out_is_remembered_as_failed() -> None:
     assert len(remembered) == 1
     assert remembered[0]["payload"]["tool"] == "gmail__send_message"
     assert remembered[0]["payload"]["approval_id"] == approval.id
+
+
+def _agent_outcome_event(event_id: int) -> Event:
+    """The event _remember_outcome writes after a carried-out approval —
+    what the next tick's turn is told about its own act."""
+    return Event(
+        id=event_id,
+        source="agent",
+        kind="action_done",
+        occurred_at=datetime.now(UTC),
+        payload={
+            "tool": "mail__send_message",
+            "params": {"to": "a@b.c"},
+            "plain": "Sent the email (to a@b.c)",
+            "detail": "sent",
+            "approval_id": 1,
+        },
+        salience_score=5.0,
+        memorable=True,
+        meta={},
+    )
+
+
+def _held_contents(provider: FakeProvider, call_index: int) -> list[str]:
+    """The tool-result texts the model saw before its Nth completion."""
+    return [
+        b.content for m in provider.calls[call_index][1] for b in m.blocks
+        if isinstance(b, ToolResult)
+    ]
+
+
+async def test_an_unprompted_turn_cannot_re_park_a_just_reported_action() -> None:
+    """The reported loop: an approved send runs, its outcome lands as an
+    event, and the next turn — told exactly that — drafts the send again,
+    so the user is asked to approve the same thing over and over. The
+    executor refuses: a re-proposal of a just-settled act never parks."""
+    provider = FakeProvider(
+        [
+            Turn(
+                text="",
+                tool_calls=[
+                    ToolCall(id="t1", name="mail__send_message", arguments={"to": "a@b.c"})
+                ],
+            ),
+            Turn(text=""),
+        ]
+    )
+    kit = LoopKit(provider)
+    kit.add_tool("mail__send_message")
+    kit.events.events[1] = _agent_outcome_event(1)
+
+    await kit.loop._tick()
+
+    assert kit.approvals.created == []  # the loop ends here — no second ask
+    assert kit.connector.approvals_presented == []
+    # and the model heard why, in plain words, not silence
+    assert any("already settled" in c for c in _held_contents(provider, 1))
+    assert any("Sent the email (to a@b.c)" in c for c in _held_contents(provider, 1))
+
+
+async def test_a_user_asking_again_still_parks() -> None:
+    """The guard is scoped to turns nobody asked for: the user typing
+    "send it again" right after the outcome event must still reach the
+    one-tap approval — their message is a fresh request."""
+    provider = FakeProvider(
+        [
+            Turn(
+                text="",
+                tool_calls=[
+                    ToolCall(id="t1", name="mail__send_message", arguments={"to": "a@b.c"})
+                ],
+            ),
+            Turn(text=""),
+        ]
+    )
+    kit = LoopKit(provider)
+    kit.add_tool("mail__send_message")
+    kit.events.events[1] = _agent_outcome_event(1)
+    kit.loop.submit_message(_msg("send it again"))
+
+    await kit.loop._tick()
+
+    assert len(kit.approvals.created) == 1
+    assert kit.connector.approvals_presented[0][0] == kit.approvals.created[0].id
+
+
+async def test_the_same_call_is_never_parked_twice_in_one_turn() -> None:
+    """Two identical proposals inside one turn put one question in front
+    of the user, not two approval rows — the second gets the first's
+    held answer instead of a fresh park."""
+    provider = FakeProvider(
+        [
+            Turn(
+                text="",
+                tool_calls=[
+                    ToolCall(id="t1", name="mail__send_message", arguments={"to": "a@b.c"})
+                ],
+            ),
+            Turn(
+                text="",
+                tool_calls=[
+                    ToolCall(id="t2", name="mail__send_message", arguments={"to": "a@b.c"})
+                ],
+            ),
+            Turn(text=""),
+        ]
+    )
+    kit = LoopKit(provider)
+    kit.add_tool("mail__send_message")
+    kit.loop.submit_message(_msg("send an email to sam"))
+
+    await kit.loop._tick()
+
+    assert len(kit.approvals.created) == 1
+    assert len(kit.connector.approvals_presented) == 1
+    # the model saw the same held-for-approval answer both times
+    assert sum("held for approval" in c for c in _held_contents(provider, 2)) == 2
 
 
 def _stub_hub(*, ready: bool) -> Any:
@@ -412,9 +514,7 @@ async def test_the_tick_expires_overdue_approvals() -> None:
     # flips it to expired (and the store audits it), so no surface keeps
     # offering a dead decision
     kit = LoopKit(None)
-    approval = await kit.approvals.create(
-        tool_name="mail__send_message", params={"to": "a@b.c"}
-    )
+    approval = await kit.approvals.create(tool_name="mail__send_message", params={"to": "a@b.c"})
     assert [approval] == await kit.approvals.list_pending()  # staged, waiting
     approval.expires_at = datetime.now(UTC) - timedelta(hours=1)
 
@@ -427,12 +527,8 @@ async def test_list_pending_never_shows_an_expired_row() -> None:
     # even before the tick's expire_overdue runs, a pending-but-expired
     # row is hidden from every reader — the store's own filter
     kit = LoopKit(None)
-    fresh = await kit.approvals.create(
-        tool_name="mail__send_message", params={"to": "a@b.c"}
-    )
-    stale = await kit.approvals.create(
-        tool_name="mail__send_message", params={"to": "d@e.f"}
-    )
+    fresh = await kit.approvals.create(tool_name="mail__send_message", params={"to": "a@b.c"})
+    stale = await kit.approvals.create(tool_name="mail__send_message", params={"to": "d@e.f"})
     stale.expires_at = datetime.now(UTC) - timedelta(minutes=5)
 
     pending = await kit.approvals.list_pending()
@@ -504,9 +600,7 @@ async def test_unavailable_tools_come_back_in_plain_words() -> None:
 
     # an app that isn't linked at all (allow-classified, so the gate lets it
     # through to the registry, which is where the miss becomes a plain word)
-    result = await kit.loop._execute(
-        ToolCall(id="t1", name="gmail__list_messages", arguments={})
-    )
+    result = await kit.loop._execute(ToolCall(id="t1", name="gmail__list_messages", arguments={}))
     assert result.is_error is True
     assert result.content == "gmail isn't connected right now"
     assert "gmail__list_messages" not in result.content
@@ -531,17 +625,13 @@ async def test_a_wrong_name_in_a_linked_app_is_plain_about_what_is_missing() -> 
     kit.add_tool("mail__list_messages", result="2 unread: alice, bob")
 
     # the model hallucinated an action a linked app doesn't offer
-    result = await kit.loop._execute(
-        ToolCall(id="t1", name="mail__search_ghost", arguments={})
-    )
+    result = await kit.loop._execute(ToolCall(id="t1", name="mail__search_ghost", arguments={}))
     assert result.is_error is True
     assert result.content == "that action isn't available in mail right now"
     assert "mail__search_ghost" not in result.content
 
     # a made-up native name gets the same treatment, without naming anything
-    result = await kit.loop._execute(
-        ToolCall(id="t2", name="memory_search_fast", arguments={})
-    )
+    result = await kit.loop._execute(ToolCall(id="t2", name="memory_search_fast", arguments={}))
     assert result.is_error is True
     assert result.content == "that action isn't available right now"
     assert "memory_search_fast" not in result.content
@@ -571,9 +661,7 @@ async def test_a_failed_carry_out_speaks_plainly_and_closes_the_approval() -> No
     # approval is closed as failed, and the record keeps exactly what the
     # chat line left out
     kit = LoopKit(None)
-    approval = await kit.approvals.create(
-        tool_name="gmail__send_message", params={"to": "a@b.c"}
-    )
+    approval = await kit.approvals.create(tool_name="gmail__send_message", params={"to": "a@b.c"})
     approval.status = APPROVED
 
     await kit.loop.execute_decision(approval.id, APPROVED)
@@ -720,7 +808,12 @@ async def test_transcript_reaches_the_model_with_roles() -> None:
     transcript = FakeTranscript(
         rows=[
             {"surface": "telegram", "direction": "in", "text": "tell a joke", "at": ""},
-            {"surface": "telegram", "direction": "out", "text": "why don't scientists trust atoms?", "at": ""},
+            {
+                "surface": "telegram",
+                "direction": "out",
+                "text": "why don't scientists trust atoms?",
+                "at": "",
+            },
         ]
     )
     kit = LoopKit(provider, transcript=transcript)
@@ -843,13 +936,21 @@ async def test_a_turn_that_sent_via_tool_does_not_also_fan_out_the_reply() -> No
     # reply — both reach the fanout, which reads as the same thing twice
     # in different wording. One delivery per turn: the tool send replaces
     # the reply, which stays in the trace for replay.
-    provider = FakeProvider([
-        Turn(text="", tool_calls=[
-            ToolCall(id="c1", name="send_chat_message",
-                     arguments={"text": "no mail server connected"})
-        ]),
-        Turn(text="No mail server is connected right now."),
-    ])
+    provider = FakeProvider(
+        [
+            Turn(
+                text="",
+                tool_calls=[
+                    ToolCall(
+                        id="c1",
+                        name="send_chat_message",
+                        arguments={"text": "no mail server connected"},
+                    )
+                ],
+            ),
+            Turn(text="No mail server is connected right now."),
+        ]
+    )
     kit = LoopKit(provider)
     kit.add_send_chat_message()
     kit.loop.submit_message(_msg("can you mail"))
@@ -863,12 +964,17 @@ async def test_a_turn_that_sent_via_tool_does_not_also_fan_out_the_reply() -> No
 async def test_a_denied_send_does_not_swallow_the_reply() -> None:
     # Only a send that actually delivered replaces the reply — one denied
     # by policy sent nothing, so the model's final words must still go out.
-    provider = FakeProvider([
-        Turn(text="", tool_calls=[
-            ToolCall(id="c1", name="send_chat_message", arguments={"text": "psst"})
-        ]),
-        Turn(text="I couldn't send that."),
-    ])
+    provider = FakeProvider(
+        [
+            Turn(
+                text="",
+                tool_calls=[
+                    ToolCall(id="c1", name="send_chat_message", arguments={"text": "psst"})
+                ],
+            ),
+            Turn(text="I couldn't send that."),
+        ]
+    )
     kit = LoopKit(
         provider,
         rules=[AuthzRule(tool_pattern="send_chat_message", decision="deny", note="quiet mode")],
@@ -883,12 +989,15 @@ async def test_a_denied_send_does_not_swallow_the_reply() -> None:
 async def test_an_empty_send_does_not_swallow_the_reply() -> None:
     # The handler refuses empty text — nothing goes out — so the final
     # reply is still the turn's one delivery.
-    provider = FakeProvider([
-        Turn(text="", tool_calls=[
-            ToolCall(id="c1", name="send_chat_message", arguments={"text": "  "})
-        ]),
-        Turn(text="Nothing to send."),
-    ])
+    provider = FakeProvider(
+        [
+            Turn(
+                text="",
+                tool_calls=[ToolCall(id="c1", name="send_chat_message", arguments={"text": "  "})],
+            ),
+            Turn(text="Nothing to send."),
+        ]
+    )
     kit = LoopKit(provider)
     kit.add_send_chat_message()
     kit.loop.submit_message(_msg("say something"))
@@ -907,9 +1016,7 @@ def _quiet_kit(provider: FakeProvider | None) -> LoopKit:
     all but the day's final minute) — every waiting path of the budget is on."""
     return LoopKit(
         provider,
-        config=AppConfig(
-            agent=AgentConfig(quiet_hours="00:00-23:59", quiet_urgent_salience=8.0)
-        ),
+        config=AppConfig(agent=AgentConfig(quiet_hours="00:00-23:59", quiet_urgent_salience=8.0)),
     )
 
 
@@ -988,9 +1095,7 @@ async def test_a_routine_acts_at_night_but_its_note_waits() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _poll_host(
-    kit: LoopKit, every_minutes: float = 5.0, handler=None
-) -> SimpleNamespace:
+def _poll_host(kit: LoopKit, every_minutes: float = 5.0, handler=None) -> SimpleNamespace:
     """A host-shaped double: one server with one configured poll tool.
     `handler` overrides the poll call itself (e.g. to make it fail)."""
     config = MCPServerConfig(
@@ -1155,9 +1260,7 @@ async def test_the_prompt_tells_the_model_which_apps_are_connected() -> None:
     provider = FakeProvider([Turn(text="no mail is connected right now")])
     kit = LoopKit(provider)
     kit.tools.attach_mcp(
-        SimpleNamespace(
-            tool_specs=lambda: [ToolSpec(name="calendar__list_events", description="")]
-        )
+        SimpleNamespace(tool_specs=lambda: [ToolSpec(name="calendar__list_events", description="")])
     )
     kit.tools.sync_mcp_tools()
     kit.loop.submit_message(_msg("can you send emails?"))
@@ -1247,7 +1350,9 @@ async def test_verify_command_reports_a_broken_chain_in_plain_words() -> None:
     provider = FakeProvider([])  # any LLM call would fail the test
     kit = LoopKit(provider)
     kit.audit.verification = ChainVerification(
-        ok=False, entries=892, first_bad_seq=892,
+        ok=False,
+        entries=892,
+        first_bad_seq=892,
         problem="seq 892: stored hash does not match the entry contents",
     )
     kit.loop.submit_message(_msg("/verify"))
@@ -1343,9 +1448,7 @@ async def test_a_why_reply_is_answered_from_the_record() -> None:
 async def test_a_why_reply_to_an_unrecorded_message_reaches_the_model() -> None:
     provider = FakeProvider([Turn(text="I'm not sure what you mean")])
     kit = LoopKit(provider)
-    kit.loop.submit_message(
-        _msg("why?", reply_to_id="999", reply_to_text="the earlier words")
-    )
+    kit.loop.submit_message(_msg("why?", reply_to_id="999", reply_to_text="the earlier words"))
     await kit.loop._tick()
 
     # nothing linked the reply, so the model answers — and it can see which
@@ -1399,13 +1502,15 @@ async def test_config_opens_the_guided_walk_without_waking_the_model() -> None:
 
     # bare /config is the friendly front door: the walk's opening menu, with
     # no ingest, no model, no trace — exactly like the rest of the vocabulary
-    assert kit.connector.sent == [(
-        "let's set me up — answer each question with a number, "
-        "or \"stop\" any time.\n"
-        "1 — see my settings\n"
-        "2 — change something\n"
-        "3 — put something back the way config.yaml had it"
-    )]
+    assert kit.connector.sent == [
+        (
+            "let's set me up — answer each question with a number, "
+            'or "stop" any time.\n'
+            "1 — see my settings\n"
+            "2 — change something\n"
+            "3 — put something back the way config.yaml had it"
+        )
+    ]
     assert provider.calls == []
     assert kit.events.ingested == []  # a read never becomes memory
     assert kit.traces.created == []
@@ -1416,7 +1521,7 @@ async def test_config_opens_the_guided_walk_without_waking_the_model() -> None:
     assert kit.connector.sent[-1] == (
         "current configuration\n\n"
         "anything else? 1 — see my settings  2 — change something  "
-        "3 — reset something  (or \"done\")"
+        '3 — reset something  (or "done")'
     )
     assert manager.show_calls == [None]  # the bare overview
     assert provider.calls == []
@@ -1496,7 +1601,9 @@ async def test_a_model_proposed_connect_still_parks() -> None:
     )
     assert kit.approvals.created[-1].tool_name == "set_config"
     assert kit.approvals.created[-1].params == {
-        "op": "add", "path": "mcp_servers", "value": {"name": "github", "transport": {}}
+        "op": "add",
+        "path": "mcp_servers",
+        "value": {"name": "github", "transport": {}},
     }
 
 
@@ -1564,7 +1671,7 @@ async def test_a_guided_tuning_walk_applies_through_the_gate() -> None:
     assert kit.connector.sent[-1] == (
         "tick interval set to 10s\n"
         "anything else? 1 — see my settings  2 — change something  "
-        "3 — reset something  (or \"done\")"
+        '3 — reset something  (or "done")'
     )
 
 
@@ -1582,9 +1689,7 @@ async def test_a_guided_security_walk_parks_for_one_tap() -> None:
     assert manager.set_calls == []
     approval = kit.approvals.created[-1]
     assert approval.tool_name == "set_config"
-    assert approval.params == {
-        "op": "set", "path": "messaging.telegram.enabled", "value": True
-    }
+    assert approval.params == {"op": "set", "path": "messaging.telegram.enabled", "value": True}
     presented = kit.connector.approvals_presented[-1]
     assert presented[0] == approval.id
     assert presented[1] == "Change my configuration (path messaging.telegram.enabled)?"
@@ -1748,9 +1853,7 @@ async def test_apps_opens_the_walk_without_waking_the_model() -> None:
 
     # bare /apps is the status, the gate line, and the add hint — no
     # question is outstanding, so nothing intercepts the next message
-    assert kit.connector.sent == [
-        f"your apps: nothing connected yet.\n{_GATE_LINE}\n{_ADD_HINT}"
-    ]
+    assert kit.connector.sent == [f"your apps: nothing connected yet.\n{_GATE_LINE}\n{_ADD_HINT}"]
     assert kit.loop._apps_walk is None
     assert provider.calls == []
     assert kit.events.ingested == []  # a read never becomes memory
@@ -1766,7 +1869,9 @@ async def test_the_apps_status_is_honest_about_both_halves(tmp_path) -> None:
         ),
         mcp_servers=[
             MCPServerConfig(name="mail", transport=TransportConfig(type="http", url="https://x")),
-            MCPServerConfig(name="calendar", transport=TransportConfig(type="http", url="https://y")),
+            MCPServerConfig(
+                name="calendar", transport=TransportConfig(type="http", url="https://y")
+            ),
         ],
     )
     kit = LoopKit(provider, config=config)
@@ -1783,14 +1888,16 @@ async def test_the_apps_status_is_honest_about_both_halves(tmp_path) -> None:
 
     kit.loop.submit_message(_msg("/apps"))
     await kit.loop._tick()
-    assert kit.connector.sent == [(
-        "your apps:\n"
-        "· telegram — on\n"
-        "· discord — on — no token yet\n"
-        "· mail — connected · 1 action\n"
-        "· calendar — still connecting — I'll tell you the moment it's up\n"
-        f"{_GATE_LINE}\n{_ADD_HINT}"
-    )]
+    assert kit.connector.sent == [
+        (
+            "your apps:\n"
+            "· telegram — on\n"
+            "· discord — on — no token yet\n"
+            "· mail — connected · 1 action\n"
+            "· calendar — still connecting — I'll tell you the moment it's up\n"
+            f"{_GATE_LINE}\n{_ADD_HINT}"
+        )
+    ]
     assert provider.calls == []
     assert kit.events.ingested == []
 
@@ -1851,12 +1958,14 @@ async def test_a_pasted_key_connects_directly_and_never_reaches_the_model(
 
     # the pick-and-paste was the approval: applied, not parked
     assert kit.approvals.created == []
-    assert manager.set_calls == [{
-        "op": "set",
-        "path": "messaging.telegram.enabled",
-        "value": True,
-        "source": "tool",
-    }]
+    assert manager.set_calls == [
+        {
+            "op": "set",
+            "path": "messaging.telegram.enabled",
+            "value": True,
+            "source": "tool",
+        }
+    ]
     applied = kit.audit.entries[-1]
     assert applied["tool_name"] == "set_config"
     assert applied["decision"] == "allow"
@@ -2089,12 +2198,14 @@ async def test_the_hub_connect_announces_and_asks_the_gates_question(tmp_path) -
     assert kit.events.ingested == []  # the paste never became memory
     assert provider.calls == []  # and the model never woke
     # the first connect pins the composio server entry, origin "walk"
-    assert manager.set_calls == [{
-        "op": "add",
-        "path": "mcp_servers",
-        "value": dict(SERVER_ENTRY),
-        "source": "tool",
-    }]
+    assert manager.set_calls == [
+        {
+            "op": "add",
+            "path": "mcp_servers",
+            "value": dict(SERVER_ENTRY),
+            "source": "tool",
+        }
+    ]
 
     # the click lands — the waiter announces and asks the gate's question
     while kit.loop._connect_waits:

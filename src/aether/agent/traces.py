@@ -89,8 +89,7 @@ class Traces:
 
     async def get(self, trace_id: int) -> Trace | None:
         row = await self._pool.fetchrow(
-            "SELECT id, kind, label, trace_enc, created_at FROM decision_traces"
-            " WHERE id = $1",
+            "SELECT id, kind, label, trace_enc, created_at FROM decision_traces WHERE id = $1",
             trace_id,
         )
         return self._to_trace(row) if row else None

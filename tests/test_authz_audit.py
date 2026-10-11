@@ -141,8 +141,7 @@ def test_verification_text_intact_with_a_recent_act() -> None:
 def test_verification_text_counts_and_ages_in_plain_units() -> None:
     one = verification_text(ChainVerification(ok=True, entries=1))
     assert one == (
-        "decision record: 1 decision, chain intact — every entry still "
-        "hashes to the one before it."
+        "decision record: 1 decision, chain intact — every entry still hashes to the one before it."
     )
     hours_old = datetime.now(UTC) - timedelta(minutes=90)
     assert "last act 1 hour ago" in verification_text(
@@ -155,17 +154,23 @@ def test_verification_text_counts_and_ages_in_plain_units() -> None:
 
 
 def test_verification_text_broken_and_empty_states() -> None:
-    broken = verification_text(ChainVerification(
-        ok=False, entries=892, first_bad_seq=892,
-        problem="seq 892: stored hash does not match the entry contents",
-    ))
+    broken = verification_text(
+        ChainVerification(
+            ok=False,
+            entries=892,
+            first_bad_seq=892,
+            problem="seq 892: stored hash does not match the entry contents",
+        )
+    )
     assert broken == (
         "decision record: BROKEN at entry #892 — seq 892: stored hash "
         "does not match the entry contents. Everything from there on "
         "can't be trusted."
     )
-    assert verification_text(ChainVerification(ok=True, entries=0)) == \
-        "decision record: empty — nothing recorded yet."
+    assert (
+        verification_text(ChainVerification(ok=True, entries=0))
+        == "decision record: empty — nothing recorded yet."
+    )
 
 
 # ---------------------------------------------------------------------------

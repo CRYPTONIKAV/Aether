@@ -393,8 +393,10 @@ def test_gemini_signature_survives_the_tool_loop_round_trip() -> None:
 
     parts = messages_to_gemini(history)[0]["parts"]
     assert parts == [
-        {"function_call": {"name": "memory_search", "args": {"query": "bob"}},
-         "thought_signature": "sig-xyz"}
+        {
+            "function_call": {"name": "memory_search", "args": {"query": "bob"}},
+            "thought_signature": "sig-xyz",
+        }
     ]
 
 

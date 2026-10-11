@@ -15,14 +15,13 @@ from aether.agent.config_wizard import ConfigWizard
 from aether.config import AppConfig, AuthzRule, ContactRule, MCPServerConfig
 
 _TOP_MENU = (
-    "let's set me up — answer each question with a number, or \"stop\" any time.\n"
+    'let\'s set me up — answer each question with a number, or "stop" any time.\n'
     "1 — see my settings\n"
     "2 — change something\n"
     "3 — put something back the way config.yaml had it"
 )
 _AGAIN = (
-    "anything else? 1 — see my settings  2 — change something  "
-    "3 — reset something  (or \"done\")"
+    'anything else? 1 — see my settings  2 — change something  3 — reset something  (or "done")'
 )
 _GOODBYE = "ok — anytime. /config to start again."
 
@@ -217,28 +216,20 @@ async def test_reset_declined_by_word_changes_nothing() -> None:
 async def test_reset_without_a_yaml_answer_keeps_the_question_vague() -> None:
     wizard, _, _ = _wizard()  # no yaml_value wired at all
     _, _, confirm = await _say(wizard, "3", "2", "1")
-    assert confirm == (
-        "put tick_seconds back the way config.yaml had it?\n1 — yes  2 — no"
-    )
+    assert confirm == ("put tick_seconds back the way config.yaml had it?\n1 — yes  2 — no")
 
 
 async def test_list_reset_counts_the_yaml_entries() -> None:
-    wizard, applier, _ = _wizard(
-        yaml_values={"contacts.allowlist": [ContactRule(handle="@mom")]}
-    )
+    wizard, applier, _ = _wizard(yaml_values={"contacts.allowlist": [ContactRule(handle="@mom")]})
     _, _, confirm, done = await _say(wizard, "3", "5", "2", "1")
-    assert confirm == (
-        "put the allowlist back to config.yaml's 1 entry?\n1 — yes  2 — no"
-    )
+    assert confirm == ("put the allowlist back to config.yaml's 1 entry?\n1 — yes  2 — no")
     assert applier.calls == [("reset", "contacts.allowlist", None)]
     assert done == f"applied\n{_AGAIN}"
 
 
 async def test_rules_reset_counts_the_yaml_entries() -> None:
     wizard, applier, _ = _wizard(
-        yaml_values={
-            "authz.rules": [AuthzRule(tool_pattern="telegram__send", decision="allow")]
-        }
+        yaml_values={"authz.rules": [AuthzRule(tool_pattern="telegram__send", decision="allow")]}
     )
     _, _, confirm, _ = await _say(wizard, "3", "6", "1", "1")
     assert confirm == "put the rules back to config.yaml's 1 entry?\n1 — yes  2 — no"
@@ -256,8 +247,7 @@ async def test_allowlist_add_is_platform_then_handle() -> None:
     assert pick.startswith("contacts today:")
     assert "2 — allowlist · 0 entries — who I'm allowed to see" in pick
     assert listing == (
-        "the allowlist today: (nothing on it yet)\n"
-        "1 — add someone  2 — remove someone  3 — back"
+        "the allowlist today: (nothing on it yet)\n1 — add someone  2 — remove someone  3 — back"
     )
     assert platform == "which platform? (telegram, discord, slack — or * for any)"
     assert handle == "what's their handle?"
@@ -266,9 +256,7 @@ async def test_allowlist_add_is_platform_then_handle() -> None:
 
 
 async def test_allowlist_remove_picks_by_number() -> None:
-    config = AppConfig(
-        contacts={"allowlist": [ContactRule(platform="telegram", handle="@mom")]}
-    )
+    config = AppConfig(contacts={"allowlist": [ContactRule(platform="telegram", handle="@mom")]})
     wizard, applier, _ = _wizard(config=config)
     _, _, _, numbered, done = await _say(wizard, "2", "5", "2", "2", "1")
     assert numbered == "1 — telegram @mom\nreply with a number, or stop"
@@ -277,9 +265,7 @@ async def test_allowlist_remove_picks_by_number() -> None:
 
 
 async def test_allowlist_remove_of_a_star_platform_uses_the_handle_alone() -> None:
-    config = AppConfig(
-        contacts={"allowlist": [ContactRule(handle="friend@example.com")]}
-    )
+    config = AppConfig(contacts={"allowlist": [ContactRule(handle="friend@example.com")]})
     wizard, applier, _ = _wizard(config=config)
     await _say(wizard, "2", "5", "2", "2", "1")
     assert applier.calls == [("remove", "contacts.allowlist", "friend@example.com")]
@@ -311,13 +297,9 @@ async def test_authz_add_is_pattern_decision_note() -> None:
     _, _, listing, pattern, decision, note, done = await _say(
         wizard, "2", "6", "1", "1", "telegram__send", "2", "telegram sends are one-tap"
     )
-    assert listing == (
-        "the rules today: (none yet)\n"
-        "1 — add a rule  2 — remove a rule  3 — back"
-    )
+    assert listing == ("the rules today: (none yet)\n1 — add a rule  2 — remove a rule  3 — back")
     assert pattern == (
-        "which tool calls does it cover? (a pattern, like "
-        "telegram__send or .*__delete.*)"
+        "which tool calls does it cover? (a pattern, like telegram__send or .*__delete.*)"
     )
     assert decision == (
         "should those be allowed without asking, held for your tap, or denied?\n"
@@ -362,9 +344,7 @@ async def test_mcp_apps_are_menu_items_with_their_state() -> None:
     wizard, _, _ = _wizard(config=config)
     _, menu = await _say(wizard, "2", "7")
     assert menu == (
-        "the apps today:\n"
-        "1 — mail (on, 0 polls)\n"
-        "2 — add an app  3 — remove an app  4 — back"
+        "the apps today:\n1 — mail (on, 0 polls)\n2 — add an app  3 — remove an app  4 — back"
     )
 
 
@@ -384,9 +364,7 @@ async def test_mcp_add_stdio_builds_the_object() -> None:
     )
     assert name == "what's the app's name?"
     assert kind == (
-        "how does mail connect?\n"
-        "1 — stdio — a command run locally\n"
-        "2 — http — a URL I call"
+        "how does mail connect?\n1 — stdio — a command run locally\n2 — http — a URL I call"
     )
     assert command == "what's the command? (e.g. npx -y mcp-mail-server)"
     assert applier.calls == [
@@ -416,16 +394,17 @@ async def test_mcp_add_http_takes_the_url() -> None:
         (
             "add",
             "mcp_servers",
-            {"name": "calendar", "transport": {"type": "http", "url": "https://mcp.example.com/mcp"}},
+            {
+                "name": "calendar",
+                "transport": {"type": "http", "url": "https://mcp.example.com/mcp"},
+            },
         )
     ]
     assert done.endswith(_AGAIN)
 
 
 async def test_mcp_remove_picks_the_app_by_number() -> None:
-    config = AppConfig(
-        mcp_servers=[MCPServerConfig(name="mail"), MCPServerConfig(name="calendar")]
-    )
+    config = AppConfig(mcp_servers=[MCPServerConfig(name="mail"), MCPServerConfig(name="calendar")])
     wizard, applier, _ = _wizard(config=config)
     _, _, numbered, done = await _say(wizard, "2", "7", "4", "2")  # 4 = remove an app
     assert numbered == "1 — mail\n2 — calendar\nreply with a number, or stop"
@@ -502,7 +481,4 @@ async def test_the_mcp_alias_answers_the_area_question() -> None:
     wizard.start()
     await _say(wizard, "2")
     reply = await wizard.handle("mcp")
-    assert reply == (
-        "the apps today: (none yet)\n"
-        "1 — add an app  2 — remove an app  3 — back"
-    )
+    assert reply == ("the apps today: (none yet)\n1 — add an app  2 — remove an app  3 — back")
