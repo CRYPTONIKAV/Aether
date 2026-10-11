@@ -27,21 +27,23 @@ _TYPE_NAMES = {
 # the keys the genai Schema model declares (a subset — $schema and the
 # draft-07 combiners Composio ships are rejected outright). Module-level:
 # the recursion below touches every node of every tool on every call.
-_SCHEMA_KEYS = frozenset({
-    "type",
-    "format",
-    "description",
-    "properties",
-    "items",
-    "anyOf",
-    "default",
-    "enum",
-    "example",
-    "required",
-    "title",
-    "nullable",
-    "pattern",
-})
+_SCHEMA_KEYS = frozenset(
+    {
+        "type",
+        "format",
+        "description",
+        "properties",
+        "items",
+        "anyOf",
+        "default",
+        "enum",
+        "example",
+        "required",
+        "title",
+        "nullable",
+        "pattern",
+    }
+)
 
 # these hold literal payloads, not subschemas — recursing into them would
 # rewrite a default like {"type": "text"} into {"type": "TEXT"}

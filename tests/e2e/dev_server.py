@@ -24,6 +24,7 @@ from aether.agent.traces import Trace
 from aether.api import router as api_router
 from aether.authz.approvals import PENDING, Approval
 from aether.chat.ws import router as chat_router
+from aether.composio_bridge import ConnectedApp, ToolkitInfo
 from aether.config import (
     AppConfig,
     AuthzConfig,
@@ -34,7 +35,6 @@ from aether.config import (
     Settings,
     TransportConfig,
 )
-from aether.composio_bridge import ConnectedApp, ToolkitInfo
 from aether.connectors.base import InboundMessage
 from aether.memory.entities import Entity, EntityNote
 from aether.memory.events import Event
@@ -420,7 +420,11 @@ class FakeTraces:
                 label="morning mail triage",
                 payload={
                     # the real trigger shape: a condition dict, not a string
-                    "routine": {"id": 1, "label": "morning mail triage", "trigger": {"source": "mail", "kind": "poll:unread"}},
+                    "routine": {
+                        "id": 1,
+                        "label": "morning mail triage",
+                        "trigger": {"source": "mail", "kind": "poll:unread"},
+                    },
                     "event": {"id": 1, "source": "mail", "kind": "poll:unread", "line": mail_line},
                     "calls": [
                         {
@@ -443,7 +447,11 @@ class FakeTraces:
                 payload={
                     "trigger": {
                         "messages": [
-                            {"surface": "telegram", "handle": "@sam", "text": "can you confirm thursday at 4?"}
+                            {
+                                "surface": "telegram",
+                                "handle": "@sam",
+                                "text": "can you confirm thursday at 4?",
+                            }
                         ],
                         "observations": [
                             {"id": 1, "source": "mail", "kind": "poll:unread", "line": mail_line}
@@ -544,16 +552,14 @@ class FakeHubBridge:
 
     def __init__(self) -> None:
         self.account_list = [
-            ConnectedApp(id="acc-gmail", toolkit="gmail", status="ACTIVE",
-                         identity="me@example.com"),
+            ConnectedApp(
+                id="acc-gmail", toolkit="gmail", status="ACTIVE", identity="me@example.com"
+            ),
         ]
         self.toolkit_list = [
-            ToolkitInfo(slug="gmail", name="Gmail", logo="",
-                        description="your mail"),
-            ToolkitInfo(slug="github", name="GitHub", logo="",
-                        description="your code"),
-            ToolkitInfo(slug="notion", name="Notion", logo="",
-                        description="your notes"),
+            ToolkitInfo(slug="gmail", name="Gmail", logo="", description="your mail"),
+            ToolkitInfo(slug="github", name="GitHub", logo="", description="your code"),
+            ToolkitInfo(slug="notion", name="Notion", logo="", description="your notes"),
         ]
 
     async def available(self) -> bool:

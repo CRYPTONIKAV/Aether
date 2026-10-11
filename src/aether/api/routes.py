@@ -12,10 +12,10 @@ import logging
 from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel
 
-from ..workspace import SecretRejected, WorkspaceEntry, WorkspaceWriteError
 from ..agent.tools import with_plain_calls, with_plain_event
 from ..apps_catalog import CATALOG, recipe_for
 from ..composio_bridge import ComposioNotConfigured
+from ..workspace import SecretRejected, WorkspaceEntry, WorkspaceWriteError
 
 log = logging.getLogger("aether.api")
 
@@ -152,9 +152,7 @@ async def events_feed(request: Request, limit: int = 50, token: str | None = Non
                 # agent-outcome rows written before `plain` existed get the
                 # backend's sentence at read time — old rows read like new
                 "payload": (
-                    with_plain_event(e.payload, kind=e.kind)
-                    if e.source == "agent"
-                    else e.payload
+                    with_plain_event(e.payload, kind=e.kind) if e.source == "agent" else e.payload
                 ),
             }
             for e in events  # recent() is newest first — the feed's order
@@ -318,8 +316,7 @@ async def apps_feed(request: Request, token: str | None = None) -> dict:
         "screen_vision_available": getattr(request.app.state, "screen_vision", None) is not None,
         "contacts_mode": config.contacts.mode,
         "catalog": [
-            {"key": r.key, "name": r.name, "blurb": r.blurb, "kind": r.kind}
-            for r in CATALOG
+            {"key": r.key, "name": r.name, "blurb": r.blurb, "kind": r.kind} for r in CATALOG
         ],
     }
 
@@ -376,9 +373,7 @@ async def connect_app(request: Request, toolkit: str, token: str | None = None) 
         ) from None
     except Exception:
         log.exception("connect start failed for %s", toolkit)
-        raise HTTPException(
-            status_code=502, detail="the hub couldn't start that connect"
-        ) from None
+        raise HTTPException(status_code=502, detail="the hub couldn't start that connect") from None
     agent = getattr(request.app.state, "agent", None)
     if agent is not None:
         agent.watch_connect(toolkit, request_id)
@@ -461,9 +456,7 @@ async def traces_feed(request: Request, limit: int = 30, token: str | None = Non
 
 
 @router.get("/api/traces/{trace_id}")
-async def trace_detail(
-    trace_id: int, request: Request, token: str | None = None
-) -> dict:
+async def trace_detail(trace_id: int, request: Request, token: str | None = None) -> dict:
     """One decision trace, decrypted for the owner's eyes: what triggered
     the act, the gate's ruling on every call, and what came back."""
     if not _authorized(request, token):

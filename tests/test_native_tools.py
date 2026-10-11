@@ -66,11 +66,11 @@ class NativeKit:
             scheduler=self.scheduler,
             surfaces=SurfaceFanout([self.connector]),
             capture_box=self.box,
-            routines=routines,        # None keeps the routine tools unregistered
-            traces=traces,            # same for the decision-replay tool
-            audit=audit,              # and the integrity check
+            routines=routines,  # None keeps the routine tools unregistered
+            traces=traces,  # same for the decision-replay tool
+            audit=audit,  # and the integrity check
             config_manager=config_manager,  # and the config tools
-            workspace=workspace,      # and the workspace tools
+            workspace=workspace,  # and the workspace tools
         )
 
     async def run(self, name: str, params: dict) -> str:
@@ -225,8 +225,7 @@ async def test_send_chat_message_fans_out() -> None:
     out = await kit.run("send_chat_message", {"text": "the deploy finished"})
     assert out == "Sent to the user's chat surfaces."
     assert kit.connector.sent == ["the deploy finished"]
-    assert await kit.run("send_chat_message", {"text": "  "}) == \
-        "send_chat_message needs text."
+    assert await kit.run("send_chat_message", {"text": "  "}) == "send_chat_message needs text."
 
 
 # ---------------------------------------------------------------------------
@@ -247,10 +246,16 @@ async def test_audit_wiring_adds_the_integrity_tool() -> None:
 
 
 async def test_verify_integrity_reports_a_broken_chain() -> None:
-    kit = NativeKit(audit=FakeAudit(verification=ChainVerification(
-        ok=False, entries=892, first_bad_seq=892,
-        problem="seq 892: stored hash does not match the entry contents",
-    )))
+    kit = NativeKit(
+        audit=FakeAudit(
+            verification=ChainVerification(
+                ok=False,
+                entries=892,
+                first_bad_seq=892,
+                problem="seq 892: stored hash does not match the entry contents",
+            )
+        )
+    )
     out = await kit.run("verify_integrity", {})
     assert "decision record" in out
     assert "BROKEN at entry #892" in out
@@ -258,8 +263,7 @@ async def test_verify_integrity_reports_a_broken_chain() -> None:
 
 async def test_verify_integrity_on_an_empty_record_says_so() -> None:
     kit = NativeKit(audit=FakeAudit())
-    assert await kit.run("verify_integrity", {}) == \
-        "decision record: empty — nothing recorded yet."
+    assert await kit.run("verify_integrity", {}) == "decision record: empty — nothing recorded yet."
 
 
 # ---------------------------------------------------------------------------
@@ -274,22 +278,38 @@ def _turn_trace(payload: dict) -> FakeTraces:
 
 
 def test_plain_replay_speaks_in_plain_words() -> None:
-    traces = _turn_trace({
-        "trigger": {"messages": [
-            {"surface": "telegram", "handle": "@vedant",
-             "text": "email alice the invoice", "reply_to_id": "", "reply_to_text": ""},
-        ], "observations": []},
-        "calls": [{
-            "id": "c1", "name": "mail__send_email",
-            "params": {"to": "alice@x.com"},
-            "decision": "require_approval", "matched_rule": "send", "reason": "sends are risky",
-            "audit_seq": None, "approval_id": 12,
-            "result": "held for approval (#12) — the user has been asked",
-            "is_error": False,
-        }],
-        "reply": "on it — sent once you approve",
-        "chat_refs": {"telegram": "101"},
-    })
+    traces = _turn_trace(
+        {
+            "trigger": {
+                "messages": [
+                    {
+                        "surface": "telegram",
+                        "handle": "@vedant",
+                        "text": "email alice the invoice",
+                        "reply_to_id": "",
+                        "reply_to_text": "",
+                    },
+                ],
+                "observations": [],
+            },
+            "calls": [
+                {
+                    "id": "c1",
+                    "name": "mail__send_email",
+                    "params": {"to": "alice@x.com"},
+                    "decision": "require_approval",
+                    "matched_rule": "send",
+                    "reason": "sends are risky",
+                    "audit_seq": None,
+                    "approval_id": 12,
+                    "result": "held for approval (#12) — the user has been asked",
+                    "is_error": False,
+                }
+            ],
+            "reply": "on it — sent once you approve",
+            "chat_refs": {"telegram": "101"},
+        }
+    )
     out = plain_replay(traces.traces[0])
     assert out.startswith("that message, from the record (trace #1):")
     assert 'You asked: "email alice the invoice"' in out
@@ -308,9 +328,12 @@ def test_plain_replay_of_a_failed_carry_out_never_leaks_the_error() -> None:
         kind="carry_out",
         label="approval #5 — gmail__send_message",
         payload={
-            "approval_id": 5, "tool": "gmail__send_message", "params": {},
+            "approval_id": 5,
+            "tool": "gmail__send_message",
+            "params": {},
             "decided_by": "user",
-            "result": "unknown tool: gmail__send_message", "is_error": True,
+            "result": "unknown tool: gmail__send_message",
+            "is_error": True,
             "chat_refs": {"telegram": "102"},
         },
     )
@@ -322,21 +345,43 @@ def test_plain_replay_of_a_failed_carry_out_never_leaks_the_error() -> None:
 
 
 def test_plain_replay_words_allowed_and_denied_calls() -> None:
-    traces = _turn_trace({
-        "trigger": {"messages": [], "observations": [
-            {"id": 1, "source": "mail", "kind": "poll:unread", "line": "3 unread"},
-        ]},
-        "calls": [
-            {"id": "c1", "name": "note_entity", "params": {}, "decision": "allow",
-             "matched_rule": "builtin:internal", "reason": "", "audit_seq": 9,
-             "approval_id": None, "result": "Noted on Alice (identity 1).", "is_error": False},
-            {"id": "c2", "name": "telegram__send_message", "params": {"text": "hi"},
-             "decision": "deny", "matched_rule": "quiet mode", "reason": "quiet mode",
-             "audit_seq": 10, "approval_id": None,
-             "result": "denied by policy: quiet mode", "is_error": True},
-        ],
-        "reply": "noted, and I held off on the ping",
-    })
+    traces = _turn_trace(
+        {
+            "trigger": {
+                "messages": [],
+                "observations": [
+                    {"id": 1, "source": "mail", "kind": "poll:unread", "line": "3 unread"},
+                ],
+            },
+            "calls": [
+                {
+                    "id": "c1",
+                    "name": "note_entity",
+                    "params": {},
+                    "decision": "allow",
+                    "matched_rule": "builtin:internal",
+                    "reason": "",
+                    "audit_seq": 9,
+                    "approval_id": None,
+                    "result": "Noted on Alice (identity 1).",
+                    "is_error": False,
+                },
+                {
+                    "id": "c2",
+                    "name": "telegram__send_message",
+                    "params": {"text": "hi"},
+                    "decision": "deny",
+                    "matched_rule": "quiet mode",
+                    "reason": "quiet mode",
+                    "audit_seq": 10,
+                    "approval_id": None,
+                    "result": "denied by policy: quiet mode",
+                    "is_error": True,
+                },
+            ],
+            "reply": "noted, and I held off on the ping",
+        }
+    )
     out = plain_replay(traces.traces[0])
     assert "I noticed 1 new event." in out
     assert "I went ahead with keeping a note — the gate let it through (builtin:internal)." in out
@@ -346,22 +391,53 @@ def test_plain_replay_words_allowed_and_denied_calls() -> None:
 
 def test_plain_replay_of_routine_and_scheduled_fires() -> None:
     traces = FakeTraces()
-    traces.add(kind="routine", label="billing", payload={
-        "routine": {"id": 1, "label": "billing", "trigger": {"source": "mail"}},
-        "event": {"id": 9, "source": "mail", "kind": "poll:unread", "line": "an invoice"},
-        "calls": [{"id": "c1", "name": "note_entity", "params": {}, "decision": "allow",
-                   "matched_rule": "builtin:internal", "reason": "", "audit_seq": 11,
-                   "approval_id": None, "result": "noted", "is_error": False}],
-        "audit_seq": 11, "chat_refs": {"telegram": "103"},
-    })
-    traces.add(kind="scheduled", label="evening summary", payload={
-        "action": {"id": 7, "label": "evening summary", "run_at": "2026-09-29 18:30:00+0000"},
-        "calls": [{"id": "sched-7", "name": "mail__list_messages", "params": {"limit": 1},
-                   "decision": "allow", "matched_rule": "builtin:read-only", "reason": "",
-                   "audit_seq": 12, "approval_id": None,
-                   "result": "3 unread: alice, bob", "is_error": False}],
-        "result": "3 unread: alice, bob", "is_error": False,
-    })
+    traces.add(
+        kind="routine",
+        label="billing",
+        payload={
+            "routine": {"id": 1, "label": "billing", "trigger": {"source": "mail"}},
+            "event": {"id": 9, "source": "mail", "kind": "poll:unread", "line": "an invoice"},
+            "calls": [
+                {
+                    "id": "c1",
+                    "name": "note_entity",
+                    "params": {},
+                    "decision": "allow",
+                    "matched_rule": "builtin:internal",
+                    "reason": "",
+                    "audit_seq": 11,
+                    "approval_id": None,
+                    "result": "noted",
+                    "is_error": False,
+                }
+            ],
+            "audit_seq": 11,
+            "chat_refs": {"telegram": "103"},
+        },
+    )
+    traces.add(
+        kind="scheduled",
+        label="evening summary",
+        payload={
+            "action": {"id": 7, "label": "evening summary", "run_at": "2026-09-29 18:30:00+0000"},
+            "calls": [
+                {
+                    "id": "sched-7",
+                    "name": "mail__list_messages",
+                    "params": {"limit": 1},
+                    "decision": "allow",
+                    "matched_rule": "builtin:read-only",
+                    "reason": "",
+                    "audit_seq": 12,
+                    "approval_id": None,
+                    "result": "3 unread: alice, bob",
+                    "is_error": False,
+                }
+            ],
+            "result": "3 unread: alice, bob",
+            "is_error": False,
+        },
+    )
     routine_out = plain_replay(traces.traces[0])
     assert "Your routine 'billing' fired." in routine_out
     assert "I went ahead with keeping a note" in routine_out
@@ -369,7 +445,10 @@ def test_plain_replay_of_routine_and_scheduled_fires() -> None:
     scheduled_out = plain_replay(traces.traces[1])
     assert "The scheduled action 'evening summary' came due." in scheduled_out
     # a read is said as a read, never as a send
-    assert "I went ahead with checking mail — the gate let it through (builtin:read-only)." in scheduled_out
+    assert (
+        "I went ahead with checking mail — the gate let it through (builtin:read-only)."
+        in scheduled_out
+    )
     assert "sending an email" not in scheduled_out
 
 
@@ -521,9 +600,7 @@ async def test_workspace_promote_moves_a_daily_entry_into_memory(tmp_path) -> No
     workspace = _workspace(tmp_path)
     kit = NativeKit(workspace=workspace)
     today = datetime.now(UTC).date().isoformat()
-    saved = await kit.run(
-        "workspace_remember", {"text": "deploy went out at 5pm", "kind": "daily"}
-    )
+    saved = await kit.run("workspace_remember", {"text": "deploy went out at 5pm", "kind": "daily"})
     entry_id = saved.rsplit(" ", 1)[-1].rstrip(".")
 
     promoted = await kit.run("workspace_promote", {"date": today, "entry_id": entry_id})
@@ -537,7 +614,9 @@ async def test_workspace_promote_moves_a_daily_entry_into_memory(tmp_path) -> No
 async def test_workspace_remember_records_user_vs_agent_origin(tmp_path) -> None:
     workspace = _workspace(tmp_path)
     kit = NativeKit(workspace=workspace)
-    await kit.run("workspace_remember", {"text": "told me directly", "kind": "fact", "source": "user"})
+    await kit.run(
+        "workspace_remember", {"text": "told me directly", "kind": "fact", "source": "user"}
+    )
     await kit.run("workspace_remember", {"text": "inferred this", "kind": "fact"})
     sources = {e.text: e.source for e in workspace.entries("memory")}
     assert sources["told me directly"] == "user"
@@ -562,7 +641,8 @@ async def test_workspace_rewrite_refuses_other_files(tmp_path) -> None:
 async def test_workspace_rewrite_refuses_secrets(tmp_path) -> None:
     kit = NativeKit(workspace=_workspace(tmp_path))
     out = await kit.run(
-        "workspace_rewrite", {"file": "identity", "text": "api_key: sk-abcdefghijklmnopqrstuvwxyz0123456789"}
+        "workspace_rewrite",
+        {"file": "identity", "text": "api_key: sk-abcdefghijklmnopqrstuvwxyz0123456789"},
     )
     assert out.startswith("not saved:")
 

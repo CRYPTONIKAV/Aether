@@ -69,7 +69,12 @@ def test_from_condition_normalizes_like_the_allowlist() -> None:
     assert trigger_matches({"from": "alice@example.com"}, event)
     assert trigger_matches({"from": "mailto:alice@example.com"}, event)
 
-    tg = _obs(2, source="telegram", kind="chat_message", sender={"platform": "telegram", "handle": "@alice"})
+    tg = _obs(
+        2,
+        source="telegram",
+        kind="chat_message",
+        sender={"platform": "telegram", "handle": "@alice"},
+    )
     assert trigger_matches({"from": "@alice"}, tg)
     assert trigger_matches({"from": "alice"}, tg)
     assert not trigger_matches({"from": "@bob"}, tg)
@@ -154,7 +159,9 @@ async def test_cooldown_window_holds_a_refire() -> None:
 async def test_non_matching_event_is_silent() -> None:
     kit = LoopKit(None)
     kit.add_tool("note_entity")
-    kit.routines.add(trigger={"source": "mail"}, action={"type": "tool", "tool": "note_entity", "params": {}})
+    kit.routines.add(
+        trigger={"source": "mail"}, action={"type": "tool", "tool": "note_entity", "params": {}}
+    )
     kit.events.events[1] = _obs(1, source="telegram")
 
     await kit.loop._tick()
@@ -169,8 +176,16 @@ async def test_two_matching_routines_each_fire_once() -> None:
     kit = LoopKit(None)
     kit.add_tool("note_entity")
     kit.add_tool("memory_search", result="found it")
-    kit.routines.add(label="one", trigger={"contains": "invoice"}, action={"type": "tool", "tool": "note_entity", "params": {}})
-    kit.routines.add(label="two", trigger={"source": "mail"}, action={"type": "tool", "tool": "memory_search", "params": {"query": "invoice"}})
+    kit.routines.add(
+        label="one",
+        trigger={"contains": "invoice"},
+        action={"type": "tool", "tool": "note_entity", "params": {}},
+    )
+    kit.routines.add(
+        label="two",
+        trigger={"source": "mail"},
+        action={"type": "tool", "tool": "memory_search", "params": {"query": "invoice"}},
+    )
     kit.events.events[1] = _obs(1, source="mail", payload={"result": "invoice arrived"})
 
     await kit.loop._tick()
@@ -203,7 +218,10 @@ async def test_a_failing_routine_does_not_stop_the_others() -> None:
 
     await kit.loop._tick()
 
-    assert kit.routines.fired == [1, 2]  # both attempted — the failure counts, so its cooldown gates the retry
+    assert kit.routines.fired == [
+        1,
+        2,
+    ]  # both attempted — the failure counts, so its cooldown gates the retry
     assert kit.executed == [("note_entity", {})]  # only the working one ran
     assert any("routine fire failed" in s for s in kit.connector.sent)
 
@@ -221,14 +239,23 @@ async def test_eleven_native_tools_register_when_routines_are_wired() -> None:
 
 async def test_create_routine_validates_its_inputs() -> None:
     kit = NativeKit(routines=FakeRoutines())
-    assert "needs a label" in await kit.run("create_routine", {"tool_name": "note_entity", "when_source": "mail"})
-    assert "needs a tool_name" in await kit.run("create_routine", {"label": "x", "when_source": "mail"})
+    assert "needs a label" in await kit.run(
+        "create_routine", {"tool_name": "note_entity", "when_source": "mail"}
+    )
+    assert "needs a tool_name" in await kit.run(
+        "create_routine", {"label": "x", "when_source": "mail"}
+    )
     no_condition = await kit.run("create_routine", {"label": "x", "tool_name": "note_entity"})
     assert "at least one condition" in no_condition
     assert kit.routines.created == []
     bad_cooldown = await kit.run(
         "create_routine",
-        {"label": "x", "tool_name": "note_entity", "when_source": "mail", "cooldown_seconds": "soon"},
+        {
+            "label": "x",
+            "tool_name": "note_entity",
+            "when_source": "mail",
+            "cooldown_seconds": "soon",
+        },
     )
     assert "cooldown_seconds must be an integer" in bad_cooldown
 
@@ -285,7 +312,9 @@ async def test_routine_tools_report_missing_or_malformed_ids() -> None:
     assert "No routine 7" in await kit.run("delete_routine", {"routine_id": 7})
     assert "needs a routine_id" in await kit.run("delete_routine", {})
     assert "needs a routine_id" in await kit.run("set_routine_enabled", {"routine_id": "abc"})
-    assert "No routine 7" in await kit.run("set_routine_enabled", {"routine_id": 7, "enabled": False})
+    assert "No routine 7" in await kit.run(
+        "set_routine_enabled", {"routine_id": 7, "enabled": False}
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -364,8 +393,16 @@ async def test_fire_bookkeeping_and_lifecycle_survive_a_fresh_pool(db) -> None:
 @pytest.mark.integration
 async def test_list_enabled_orders_by_taught_order(db) -> None:
     store = _make_routines(db)
-    first = await store.create(label="first", trigger={"source": "mail"}, action={"type": "tool", "tool": "note_entity", "params": {}})
-    second = await store.create(label="second", trigger={"source": "telegram"}, action={"type": "tool", "tool": "note_entity", "params": {}})
+    first = await store.create(
+        label="first",
+        trigger={"source": "mail"},
+        action={"type": "tool", "tool": "note_entity", "params": {}},
+    )
+    second = await store.create(
+        label="second",
+        trigger={"source": "telegram"},
+        action={"type": "tool", "tool": "note_entity", "params": {}},
+    )
 
     enabled = await store.list_enabled()
     assert [r.id for r in enabled] == [first.id, second.id]  # oldest first

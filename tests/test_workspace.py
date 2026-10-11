@@ -367,7 +367,9 @@ def test_entries_distinguishes_human_from_machine_authored_lines(tmp_path) -> No
     ws.remember("prefers short replies", "preference", source="agent")
     # a human typing straight into the file writes a plain bullet, no comment
     user_path = ws.root / "USER.md"
-    user_path.write_text(user_path.read_text(encoding="utf-8") + "- always use dark mode\n", encoding="utf-8")
+    user_path.write_text(
+        user_path.read_text(encoding="utf-8") + "- always use dark mode\n", encoding="utf-8"
+    )
 
     entries = ws.entries("user")
     by_text = {e.text: e for e in entries}

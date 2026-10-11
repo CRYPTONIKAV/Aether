@@ -163,7 +163,9 @@ class FakeTelegramApp:
         self.shutdown = True
 
 
-def _tg_update(text: str, username: str = "vedant", user_id: int = 1, chat_id: int = 42, reply_to=None):
+def _tg_update(
+    text: str, username: str = "vedant", user_id: int = 1, chat_id: int = 42, reply_to=None
+):
     return SimpleNamespace(
         effective_message=SimpleNamespace(text=text, chat_id=chat_id, reply_to_message=reply_to),
         effective_user=SimpleNamespace(username=username, id=user_id),
@@ -236,8 +238,12 @@ async def test_telegram_a_reply_carries_what_it_answers() -> None:
     )
     assert received == [
         InboundMessage(
-            surface="telegram", handle="@vedant", text="why?", chat_ref="42",
-            reply_to_id="101", reply_to_text="the invoice is sent",
+            surface="telegram",
+            handle="@vedant",
+            text="why?",
+            chat_ref="42",
+            reply_to_id="101",
+            reply_to_text="the invoice is sent",
         )
     ]
 
@@ -261,8 +267,10 @@ async def test_telegram_commands_reach_the_loop_not_the_void() -> None:
     update = Update(
         update_id=1,
         message=Message(
-            message_id=10, date=datetime.now(UTC),
-            chat=Chat(id=42, type=Chat.PRIVATE), text="/verify",
+            message_id=10,
+            date=datetime.now(UTC),
+            chat=Chat(id=42, type=Chat.PRIVATE),
+            text="/verify",
         ),
     )
     assert app.handlers[0].filters.check_update(update)
@@ -300,7 +308,8 @@ async def test_telegram_button_press_decides_and_retires_the_buttons() -> None:
 
     update = SimpleNamespace(
         callback_query=SimpleNamespace(
-            data="aether:approve:9", answer=answer,
+            data="aether:approve:9",
+            answer=answer,
             edit_message_reply_markup=edit_message_reply_markup,
         )
     )

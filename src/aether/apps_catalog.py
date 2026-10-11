@@ -54,9 +54,7 @@ CATALOG: tuple[AppRecipe, ...] = (
         env_names=("TELEGRAM_BOT_TOKEN",),
         keys_line="one token needed:",
         stake="your chats there",
-        steps=(
-            "open https://t.me/BotFather and send it /newbot — it hands you a token",
-        ),
+        steps=("open https://t.me/BotFather and send it /newbot — it hands you a token",),
         asks=("paste the token here — I'll take it from there.",),
     ),
     AppRecipe(

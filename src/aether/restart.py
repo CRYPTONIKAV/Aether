@@ -46,8 +46,7 @@ def request(delay_seconds: float = 5.0) -> bool:
     global _pending, _task
     if _server is None:
         log.warning(
-            "restart requested but no server is registered — the change "
-            "applies on the next boot"
+            "restart requested but no server is registered — the change applies on the next boot"
         )
         return False
     if _pending:

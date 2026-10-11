@@ -114,14 +114,9 @@ class Routines:
             )
             routine_id = row["id"]
             await conn.execute(
-                "UPDATE routines SET trigger_enc = $1, action_enc = $2"
-                " WHERE id = $3",
-                self._cipher.encrypt_json(
-                    trigger, aad=_aad(routine_id, "trigger_enc")
-                ),
-                self._cipher.encrypt_json(
-                    action, aad=_aad(routine_id, "action_enc")
-                ),
+                "UPDATE routines SET trigger_enc = $1, action_enc = $2 WHERE id = $3",
+                self._cipher.encrypt_json(trigger, aad=_aad(routine_id, "trigger_enc")),
+                self._cipher.encrypt_json(action, aad=_aad(routine_id, "action_enc")),
                 routine_id,
             )
         await self._audit.append(
@@ -178,8 +173,7 @@ class Routines:
     async def mark_fired(self, routine_id: int) -> None:
         """Count the fire and start the cooldown window."""
         await self._pool.execute(
-            "UPDATE routines SET fire_count = fire_count + 1, last_fired_at = now()"
-            " WHERE id = $1",
+            "UPDATE routines SET fire_count = fire_count + 1, last_fired_at = now() WHERE id = $1",
             routine_id,
         )
 

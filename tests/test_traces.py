@@ -37,9 +37,7 @@ def _scripted_turn() -> FakeProvider:
         [
             Turn(
                 text="checking mail",
-                tool_calls=[
-                    ToolCall(id="t1", name="mail__list_messages", arguments={"limit": 2})
-                ],
+                tool_calls=[ToolCall(id="t1", name="mail__list_messages", arguments={"limit": 2})],
             ),
             Turn(text="2 unread"),
         ]
@@ -74,8 +72,13 @@ async def test_a_turn_leaves_a_trace_with_calls_rulings_and_reply() -> None:
     assert created["label"] == "what's unread?"
     payload = created["payload"]
     assert payload["trigger"]["messages"] == [
-        {"surface": "telegram", "handle": "@vedant", "text": "what's unread?",
-         "reply_to_id": "", "reply_to_text": ""}
+        {
+            "surface": "telegram",
+            "handle": "@vedant",
+            "text": "what's unread?",
+            "reply_to_id": "",
+            "reply_to_text": "",
+        }
     ]
     assert payload["trigger"]["observations"] == []
     call = payload["calls"][0]
@@ -100,9 +103,7 @@ def FakeProvider_scripted_turn():
         [
             Turn(
                 text="checking mail",
-                tool_calls=[
-                    ToolCall(id="t1", name="mail__list_messages", arguments={"limit": 2})
-                ],
+                tool_calls=[ToolCall(id="t1", name="mail__list_messages", arguments={"limit": 2})],
             ),
             Turn(text="2 unread"),
         ]
@@ -215,7 +216,10 @@ async def test_a_routine_fire_is_traced() -> None:
 def _sched(action_id: int, tool: str, params: dict) -> ScheduledAction:
     when = datetime.now(UTC) + timedelta(hours=1)
     return ScheduledAction(
-        id=action_id, label="evening summary", run_at=when, status="pending",
+        id=action_id,
+        label="evening summary",
+        run_at=when,
+        status="pending",
         payload={"type": "tool", "tool": tool, "params": params},
         created_at=when,
     )
@@ -257,9 +261,7 @@ async def test_a_failed_scheduled_fire_is_traced_before_the_raise() -> None:
 async def test_a_carried_out_approval_is_traced() -> None:
     kit = LoopKit(None)
     kit.add_tool("mail__send_message", result="sent")
-    await kit.loop._execute(
-        ToolCall(id="t1", name="mail__send_message", arguments={"to": "a@b.c"})
-    )
+    await kit.loop._execute(ToolCall(id="t1", name="mail__send_message", arguments={"to": "a@b.c"}))
     approval = kit.approvals.created[0]
     approval.status = APPROVED
     approval.decided_by = "user"
@@ -285,9 +287,7 @@ async def test_a_failed_carry_out_is_traced_as_an_error() -> None:
         raise ValueError("mail down")
 
     kit.tools.add_native(ToolSpec(name="mail__send_message", description="test"), boom)
-    await kit.loop._execute(
-        ToolCall(id="t1", name="mail__send_message", arguments={"to": "a@b.c"})
-    )
+    await kit.loop._execute(ToolCall(id="t1", name="mail__send_message", arguments={"to": "a@b.c"}))
     approval = kit.approvals.created[0]
     approval.status = APPROVED
 
@@ -338,8 +338,12 @@ def _seed_turn(kit: NativeKit, *, approval_id: int | None = None) -> None:
         kind="turn",
         label="unread check",
         payload={
-            "trigger": {"messages": [{"surface": "telegram", "handle": "@vedant",
-                                       "text": "what's unread?"}], "observations": []},
+            "trigger": {
+                "messages": [
+                    {"surface": "telegram", "handle": "@vedant", "text": "what's unread?"}
+                ],
+                "observations": [],
+            },
             "calls": [
                 {
                     "id": "t1",
@@ -384,8 +388,14 @@ async def test_explain_by_approval_id_finds_the_origin_and_the_carry_out() -> No
     kit.traces.add(
         kind="carry_out",
         label="approval #5 — mail__send_message",
-        payload={"approval_id": 5, "tool": "mail__send_message", "params": {},
-                 "decided_by": "user", "result": "sent", "is_error": False},
+        payload={
+            "approval_id": 5,
+            "tool": "mail__send_message",
+            "params": {},
+            "decided_by": "user",
+            "result": "sent",
+            "is_error": False,
+        },
     )
 
     out = await kit.run("explain_decision", {"approval_id": 5})

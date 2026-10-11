@@ -124,17 +124,19 @@ def test_the_hub_grid_searches_connects_and_disconnects(page, live_server, token
     assert "Gmail" in cards.first.inner_text()
     assert "me@example.com" in cards.first.inner_text()
     assert cards.first.locator('[data-testid="hub-disconnect"]').is_visible()
-    assert page.locator('[data-testid="hub-grid"] [data-testid="hub-card"]', has_text="GitHub").locator(
-        '[data-testid="hub-connect"]'
-    ).is_visible()
+    assert (
+        page.locator('[data-testid="hub-grid"] [data-testid="hub-card"]', has_text="GitHub")
+        .locator('[data-testid="hub-connect"]')
+        .is_visible()
+    )
     assert page.locator('[data-testid="letter-tile"]').first.is_visible()  # no logo → letter
 
     # the search filters the grid client-side
     page.fill('[data-testid="hub-search"]', "not")
     assert page.locator('[data-testid="hub-grid"] [data-testid="hub-card"]').count() == 1
-    assert (
-        page.locator('[data-testid="hub-grid"] [data-testid="hub-card"]', has_text="Notion").is_visible()
-    )
+    assert page.locator(
+        '[data-testid="hub-grid"] [data-testid="hub-card"]', has_text="Notion"
+    ).is_visible()
     page.fill('[data-testid="hub-search"]', "zzz")
     assert page.locator('[data-testid="empty-state"]').is_visible()
     page.fill('[data-testid="hub-search"]', "")

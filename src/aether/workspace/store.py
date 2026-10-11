@@ -367,7 +367,9 @@ class Workspace:
                 if not bootstrap.exists():
                     _write_text(bootstrap, _BOOTSTRAP_DEFAULT)
         except OSError as exc:
-            raise WorkspaceWriteError(f"could not set up the workspace at {self.root}: {exc}") from exc
+            raise WorkspaceWriteError(
+                f"could not set up the workspace at {self.root}: {exc}"
+            ) from exc
         return first_run
 
     def needs_bootstrap(self) -> bool:
@@ -408,9 +410,13 @@ class Workspace:
             if not line.startswith("- "):
                 continue
             entry = _parse_entry(line)
-            out.append(entry if entry is not None else WorkspaceEntry(
-                id="", text=line[2:].strip(), source="human", at="", status="active"
-            ))
+            out.append(
+                entry
+                if entry is not None
+                else WorkspaceEntry(
+                    id="", text=line[2:].strip(), source="human", at="", status="active"
+                )
+            )
         return out
 
     def context_block(self) -> str:
@@ -465,7 +471,9 @@ class Workspace:
             raise SecretRejected("that looks like a secret or API key — refusing to store it")
 
         entry_id = _new_id()
-        line = _format_entry(text, entry_id=entry_id, source=source, at=_now_iso(), confidence=confidence)
+        line = _format_entry(
+            text, entry_id=entry_id, source=source, at=_now_iso(), confidence=confidence
+        )
 
         if kind == "preference":
             path = self.root / "USER.md"
@@ -558,7 +566,14 @@ class Workspace:
                     continue
                 score = fuzz.partial_ratio(query, text.lower())
                 if score > 40:
-                    scored.append((score, WorkspaceHit(file=relpath, id=entry.id if entry else "", text=text, score=score)))
+                    scored.append(
+                        (
+                            score,
+                            WorkspaceHit(
+                                file=relpath, id=entry.id if entry else "", text=text, score=score
+                            ),
+                        )
+                    )
         scored.sort(key=lambda t: t[0], reverse=True)
         return [hit for _, hit in scored[:limit]]
 

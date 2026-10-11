@@ -161,7 +161,9 @@ async def test_set_then_reset_roundtrips_through_the_store() -> None:
     manager, store, live = _manager()
 
     reply = await manager.set(op="set", path="agent.tick_seconds", value=10)
-    assert reply == "agent.tick_seconds set to 10 (config.yaml says 30). — applies from the next tick"
+    assert (
+        reply == "agent.tick_seconds set to 10 (config.yaml says 30). — applies from the next tick"
+    )
     assert store.rows == {"agent.tick_seconds": 10.0}
     assert live.agent.tick_seconds == 10.0
 
@@ -272,7 +274,9 @@ async def test_show_marks_what_chat_changed() -> None:
     manager, _, _ = _manager()
 
     overview = await manager.show()
-    assert overview.startswith("my configuration — config.yaml plus whatever you've changed from chat:")
+    assert overview.startswith(
+        "my configuration — config.yaml plus whatever you've changed from chat:"
+    )
     assert "Nothing changed from config.yaml yet." in overview
 
     await manager.set(op="set", path="agent.tick_seconds", value=10)
@@ -282,7 +286,9 @@ async def test_show_marks_what_chat_changed() -> None:
     assert await manager.show("agent.tick_seconds") == (
         "agent.tick_seconds = 10 (changed from config.yaml, which says 30)"
     )
-    assert await manager.show("salience.threshold") == "salience.threshold = 6 (config.yaml's value)"
+    assert (
+        await manager.show("salience.threshold") == "salience.threshold = 6 (config.yaml's value)"
+    )
 
     section = await manager.show("agent")
     assert section.startswith("agent — config.yaml values with your chat changes marked:")
@@ -309,9 +315,7 @@ async def test_yaml_value_reads_the_base_even_after_chat_changes() -> None:
 
 
 async def test_yaml_value_of_a_list_hands_back_the_base_entries() -> None:
-    live = AppConfig(
-        contacts={"allowlist": [ContactRule(platform="telegram", handle="@mom")]}
-    )
+    live = AppConfig(contacts={"allowlist": [ContactRule(platform="telegram", handle="@mom")]})
     manager, _, _ = _manager(live=live)
 
     assert len(manager.yaml_value("contacts.allowlist")) == 1
@@ -379,7 +383,9 @@ async def test_allowlist_add_remove_in_plain_tokens() -> None:
 async def test_authz_rules_add_remove_and_regex_refusals() -> None:
     manager, store, live = _manager()
 
-    reply = await manager.set(op="add", path="authz.rules", value="mail__send allow for the mail app")
+    reply = await manager.set(
+        op="add", path="authz.rules", value="mail__send allow for the mail app"
+    )
     assert reply == (
         "authz.rules updated — 1 entries now (config.yaml has 0). "
         "— the gate uses the new rules from the next call"
@@ -593,9 +599,7 @@ async def test_mcp_removal_drops_the_apps_actions_from_the_namespace() -> None:
 async def test_mcp_addition_starts_the_app_and_publishes_its_actions() -> None:
     live = AppConfig(mcp_servers=[MCPServerConfig(name="mail")])
     manager, _, _ = _manager(live=live)
-    host = FakeHost(
-        diff={"started": [SimpleNamespace(name="calendar", ready=True)], "stopped": []}
-    )
+    host = FakeHost(diff={"started": [SimpleNamespace(name="calendar", ready=True)], "stopped": []})
     registry = await _registry_with(
         host, [ToolSpec(name="mail__act", description="mail action", source="mail")]
     )
