@@ -25,6 +25,11 @@ playwright install chromium             # one-time, for the browser tests below
 AETHER_TEST_E2E=1 pytest -m e2e          # opt-in, no database or API keys needed
 ```
 
+CI runs this same gauntlet on every pull request — ruff check and format, the
+unit suite on Python 3.12 and 3.14, the integration suite against a
+containerized Postgres, the webapp build, and the e2e suite under Chromium
+(`.github/workflows/ci.yml`). A PR is only done when CI is green.
+
 Unit tests must stay hermetic: no network calls, no database, no API keys.
 Anything touching a real provider or Postgres goes behind the `integration`
 marker. `tests/fakes.py` holds the in-memory provider/connector doubles —

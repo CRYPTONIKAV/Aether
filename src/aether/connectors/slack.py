@@ -35,7 +35,10 @@ def event_to_inbound(event: dict[str, Any]) -> InboundMessage | None:
     if not text or not user:
         return None
     return InboundMessage(
-        surface="slack", handle=user, text=text, chat_ref=event.get("channel", ""),
+        surface="slack",
+        handle=user,
+        text=text,
+        chat_ref=event.get("channel", ""),
         # a thread reply carries its parent's ts — enough to link a later
         # "why?" back to the trace of the message it answers
         reply_to_id=str(event.get("thread_ts") or ""),
@@ -185,9 +188,7 @@ class SlackConnector(MessagingConnector):
                 ts=message["ts"],
                 text=message.get("text", ""),
                 blocks=[
-                    block
-                    for block in message.get("blocks", [])
-                    if block.get("type") != "actions"
+                    block for block in message.get("blocks", []) if block.get("type") != "actions"
                 ],
             )
 

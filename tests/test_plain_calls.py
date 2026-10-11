@@ -78,8 +78,15 @@ class TestDescribeDismissed:
 
 
 class TestPlainOutcome:
-    def test_done_is_the_plain_sentence(self) -> None:
-        assert plain_outcome("mail__list_messages", {}, "action_done") == "Checking mail"
+    def test_done_is_the_past_tense_sentence(self) -> None:
+        # a completed act must read as finished — the doing form
+        # ("Sending an email…") on a done event is what a later turn
+        # re-drafts as something still left to do
+        assert plain_outcome("mail__list_messages", {}, "action_done") == "Checked mail"
+        assert (
+            plain_outcome("mail__send_message", {"to": "sam@example.com"}, "action_done")
+            == "Sent the email (to sam@example.com)"
+        )
 
     def test_failed_is_framed(self) -> None:
         assert plain_outcome("mail__send_message", {"to": "sam@example.com"}, "action_failed") == (
@@ -99,7 +106,11 @@ class TestWithPlainCalls:
 
     def test_never_overwrites_an_existing_plain(self) -> None:
         out = with_plain_calls(
-            {"calls": [{"name": "mail__list_messages", "params": {}, "plain": "Checking mail for Sam"}]}
+            {
+                "calls": [
+                    {"name": "mail__list_messages", "params": {}, "plain": "Checking mail for Sam"}
+                ]
+            }
         )
         assert out["calls"][0]["plain"] == "Checking mail for Sam"
 
@@ -118,7 +129,7 @@ class TestWithPlainEvent:
         out = with_plain_event(
             {"tool": "composio__GMAIL_WHO_AM_I", "params": {}}, kind="action_done"
         )
-        assert out["plain"] == "Checking the connected gmail account"
+        assert out["plain"] == "Checked the connected gmail account"
 
     def test_never_overwrites_an_existing_plain(self) -> None:
         out = with_plain_event(

@@ -19,10 +19,7 @@ from aether.agent.apps_wizard import AppsWizard
 
 _ADD_HINT = "add one with /apps add <name> — like /apps add gmail"
 _GOODBYE = "ok — anytime. /apps to start again."
-_LINK_WAITING = (
-    "still waiting — open the link I sent and approve it there; "
-    "say stop to give up."
-)
+_LINK_WAITING = "still waiting — open the link I sent and approve it there; say stop to give up."
 _TELEGRAM_RECIPE = (
     "telegram — talk to me there.\n"
     "one token needed:\n"
@@ -48,12 +45,10 @@ _HUB_KEY_RECIPE = (
 # the loop's executor reply, relayed verbatim — the honest verdict is the
 # applier's own words, the walk only adds its head line
 _APPLY_TELEGRAM = (
-    "messaging.telegram.enabled set to true (config.yaml says false). — "
-    "telegram is starting up"
+    "messaging.telegram.enabled set to true (config.yaml says false). — telegram is starting up"
 )
 _APPLY_SLACK = (
-    "messaging.slack.enabled set to true (config.yaml says false). — "
-    "slack is starting up"
+    "messaging.slack.enabled set to true (config.yaml says false). — slack is starting up"
 )
 _APPLY_WEATHER = (
     "mcp_servers updated — 1 entries now (config.yaml has 0). — weather "
@@ -61,8 +56,7 @@ _APPLY_WEATHER = (
 )
 # what a user rule forcing a hold still answers — relayed verbatim too
 _PARK_CARD = (
-    "that one's security-shaped — held for your one-tap approval (#21). "
-    "Tap approve and it's done."
+    "that one's security-shaped — held for your one-tap approval (#21). Tap approve and it's done."
 )
 
 _UNSET = object()
@@ -224,8 +218,7 @@ async def test_done_before_the_key_checks_the_env_honestly() -> None:
     await wizard.start_add("telegram")
     (not_yet,) = await _say(wizard, "done")
     assert not_yet == (
-        "not yet — TELEGRAM_BOT_TOKEN isn't set. paste it here, "
-        "or add to .env and reply \"done\"."
+        'not yet — TELEGRAM_BOT_TOKEN isn\'t set. paste it here, or add to .env and reply "done".'
     )
     assert wizard.alive
     assert save.calls == []
@@ -280,7 +273,7 @@ async def test_a_failed_save_falls_back_to_env_honestly() -> None:
     (refused,) = await _say(wizard, "123:AAbbCC")
     assert refused == (
         "that didn't work — nothing was stored. add TELEGRAM_BOT_TOKEN "
-        "to .env and reply \"done\", or paste it again."
+        'to .env and reply "done", or paste it again.'
     )
     assert wizard.alive  # the paste is re-askable — nothing was lost
     assert applier.calls == []
@@ -378,9 +371,7 @@ async def test_none_of_these_offers_the_generic_walk() -> None:
     await wizard.start_add("gmil")
     (offer,) = await _say(wizard, "3")
     assert offer == (
-        "fair enough. Set it up by hand over MCP?\n"
-        "1 — yes, walk me through it\n"
-        "2 — no"
+        "fair enough. Set it up by hand over MCP?\n1 — yes, walk me through it\n2 — no"
     )
     (bye,) = await _say(wizard, "2")
     assert bye == _GOODBYE
@@ -413,36 +404,36 @@ async def test_the_generic_stdio_walk_writes_a_by_name_reference() -> None:
     await wizard.start_add("weather")
     replies = await _say(wizard, "1", "1", "npx -y mcp-weather", "WEATHER_API_KEY")
     assert replies[0] == (
-        "how does weather connect?\n"
-        "1 — stdio — a command run locally\n"
-        "2 — http — a URL I call"
+        "how does weather connect?\n1 — stdio — a command run locally\n2 — http — a URL I call"
     )
     assert replies[1] == "what's the command? (e.g. npx -y mcp-weather)"
     assert replies[2] == (
         "does weather need a key or token? reply with the key's name "
-        "(like WEATHER_API_KEY), or \"none\""
+        '(like WEATHER_API_KEY), or "none"'
     )
     assert replies[3] == (
-        "weather needs a key.\n"
-        "paste the WEATHER_API_KEY here — I'll take it from there."
+        "weather needs a key.\npaste the WEATHER_API_KEY here — I'll take it from there."
     )
     (applied,) = await _say(wizard, "wx-123")
     assert applied == f"stored — connecting weather now.\n{_APPLY_WEATHER}"
     assert save.calls == [("WEATHER_API_KEY", "wx-123", "weather")]
-    assert applier.calls == [(
-        "add", "mcp_servers",
-        {
-            "name": "weather",
-            "transport": {
-                "type": "stdio",
-                "command": "npx",
-                "args": ["-y", "mcp-weather"],
-                # the written config references the key by name only
-                "env": {"WEATHER_API_KEY": "$WEATHER_API_KEY"},
+    assert applier.calls == [
+        (
+            "add",
+            "mcp_servers",
+            {
+                "name": "weather",
+                "transport": {
+                    "type": "stdio",
+                    "command": "npx",
+                    "args": ["-y", "mcp-weather"],
+                    # the written config references the key by name only
+                    "env": {"WEATHER_API_KEY": "$WEATHER_API_KEY"},
+                },
             },
-        },
-        "walk",
-    )]
+            "walk",
+        )
+    ]
 
 
 async def test_the_generic_http_walk_gets_a_bearer_header() -> None:
@@ -454,18 +445,21 @@ async def test_the_generic_http_walk_gets_a_bearer_header() -> None:
     await wizard.start_add("weather")
     await _say(wizard, "yes", "http", "https://mcp.example.com/mcp")
     await _say(wizard, "WEATHER_API_KEY", "wx-123")
-    assert applier.calls == [(
-        "add", "mcp_servers",
-        {
-            "name": "weather",
-            "transport": {
-                "type": "http",
-                "url": "https://mcp.example.com/mcp",
-                "headers": {"Authorization": "Bearer $WEATHER_API_KEY"},
+    assert applier.calls == [
+        (
+            "add",
+            "mcp_servers",
+            {
+                "name": "weather",
+                "transport": {
+                    "type": "http",
+                    "url": "https://mcp.example.com/mcp",
+                    "headers": {"Authorization": "Bearer $WEATHER_API_KEY"},
+                },
             },
-        },
-        "walk",
-    )]
+            "walk",
+        )
+    ]
 
 
 async def test_a_generic_app_with_no_key_applies_directly() -> None:
@@ -478,12 +472,17 @@ async def test_a_generic_app_with_no_key_applies_directly() -> None:
     await _say(wizard, "1", "stdio", "npx -y mcp-weather")
     (applied,) = await _say(wizard, "none")
     assert applied == _APPLY_WEATHER  # no head — there was nothing to paste
-    assert applier.calls == [(
-        "add", "mcp_servers",
-        {"name": "weather",
-         "transport": {"type": "stdio", "command": "npx", "args": ["-y", "mcp-weather"]}},
-        "walk",
-    )]
+    assert applier.calls == [
+        (
+            "add",
+            "mcp_servers",
+            {
+                "name": "weather",
+                "transport": {"type": "stdio", "command": "npx", "args": ["-y", "mcp-weather"]},
+            },
+            "walk",
+        )
+    ]
     assert save.calls == []
     assert not wizard.alive
 
@@ -500,7 +499,7 @@ async def test_the_generic_walk_nudges_each_question() -> None:
     wizard, *_ = _wizard(env={"COMPOSIO_API_KEY"}, toolkits=FakeToolkits([]))
     await wizard.start_add("weather")
     await _say(wizard, "1", "1")
-    (reask,) = await _say(wizard, "npx -y \"unterminated")
+    (reask,) = await _say(wizard, 'npx -y "unterminated')
     assert reask == "that command didn't parse — check the quotes and try again"
     assert wizard.alive
 
@@ -526,8 +525,7 @@ async def test_the_default_answer_writes_no_rule() -> None:
     wizard.enter_permissions("gmail", "me@gmail.com")
     (reply,) = await _say(wizard, "1")
     assert reply == (
-        "that's the default — gmail reads run free; sends, deletes and "
-        "anything new will ask first."
+        "that's the default — gmail reads run free; sends, deletes and anything new will ask first."
     )
     assert applier.calls == []  # the builtin ladder already does exactly this
     assert not wizard.alive
@@ -540,15 +538,18 @@ async def test_everything_asks_first_parks_an_authz_rule() -> None:
     wizard.enter_permissions("gmail", "me@gmail.com")
     (card,) = await _say(wizard, "2")
     assert card == _PARK_CARD
-    assert applier.calls == [(
-        "add", "authz.rules",
-        {
-            "tool_pattern": "composio__GMAIL_",
-            "decision": "approve",
-            "note": "gmail connected in chat — everything asks first",
-        },
-        "walk",
-    )]
+    assert applier.calls == [
+        (
+            "add",
+            "authz.rules",
+            {
+                "tool_pattern": "composio__GMAIL_",
+                "decision": "approve",
+                "note": "gmail connected in chat — everything asks first",
+            },
+            "walk",
+        )
+    ]
     assert not wizard.alive
 
 
@@ -557,15 +558,18 @@ async def test_act_freely_writes_the_allow_rule() -> None:
     wizard.enter_permissions("gmail", "")
     (reply,) = await _say(wizard, "free")
     assert reply == _APPLY_TELEGRAM  # the applier's own words, relayed
-    assert applier.calls == [(
-        "add", "authz.rules",
-        {
-            "tool_pattern": "composio__GMAIL_",
-            "decision": "allow",
-            "note": "gmail connected in chat — freed to act",
-        },
-        "walk",
-    )]
+    assert applier.calls == [
+        (
+            "add",
+            "authz.rules",
+            {
+                "tool_pattern": "composio__GMAIL_",
+                "decision": "allow",
+                "note": "gmail connected in chat — freed to act",
+            },
+            "walk",
+        )
+    ]
 
 
 async def test_the_permissions_menu_takes_words_and_nudges() -> None:

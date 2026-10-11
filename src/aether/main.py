@@ -20,6 +20,7 @@ from .authz.audit import AuditLog
 from .authz.policy import Policy, PolicyError
 from .chat import ChatHistory, ChatHub
 from .chat.ws import router as chat_router
+from .composio_bridge import ComposioBridge
 from .config import AppConfig, Settings, load_config
 from .config_store import ConfigManager, ConfigOverrides
 from .connectors import build_messaging_connectors
@@ -35,12 +36,11 @@ from .memory.db import create_pool, run_migrations
 from .memory.entities import Entities, LLMSamePersonJudge
 from .memory.events import EventStore
 from .memory.salience import LLMJudge, Salience
-from .composio_bridge import ComposioBridge
 from .routines import Routines
 from .scheduler import Scheduler, SchedulerWorker
-from .workspace import Workspace, WorkspaceWriteError
 from .secret_env import EnvResolver
 from .secret_store import SecretStore
+from .workspace import Workspace, WorkspaceWriteError
 
 log = logging.getLogger("aether.main")
 
@@ -187,9 +187,7 @@ def create_app(
                 log.warning("workspace unavailable (%s) — continuing without it", exc)
             else:
                 workspace = candidate
-                log.info(
-                    "workspace ready at %s (first run: %s)", workspace.root, first_run
-                )
+                log.info("workspace ready at %s (first run: %s)", workspace.root, first_run)
         app.state.workspace = workspace
 
         # --- chat + the agent ------------------------------------------------
@@ -299,6 +297,23 @@ def create_app(
     async def healthz() -> dict:
         """Plain 200 — this is the endpoint the external uptime pinger hits."""
         return {"ok": True}
+
+    @app.get("/v1/models")
+    async def list_models() -> dict:
+        """The OpenAI-compatible models answer. Local capability probes ask
+        this right after /health to check whether an OpenAI-style server
+        lives on the port; before this route the honest answer was a 404,
+        the only error line in an otherwise clean log. Model ids are not
+        secrets — the same reasoning that leaves /health unguarded."""
+        llm = config.llm
+        ids = {llm.model} | {m for m in (llm.vision_model, llm.salience_model) if m}
+        return {
+            "object": "list",
+            "data": [
+                {"id": m, "object": "model", "created": 0, "owned_by": llm.provider}
+                for m in sorted(ids)
+            ],
+        }
 
     @app.get("/")
     async def index() -> Response:

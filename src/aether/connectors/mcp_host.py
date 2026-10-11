@@ -105,9 +105,7 @@ class MCPServerConnection:
                                 # grows as the user approves apps, and its new
                                 # actions must reach the namespace without a
                                 # reconnect
-                                await asyncio.wait_for(
-                                    self._hold.wait(), timeout=_RELIST_SECONDS
-                                )
+                                await asyncio.wait_for(self._hold.wait(), timeout=_RELIST_SECONDS)
                             if self._hold.is_set() or self._stopping:
                                 break
                             await self._relist(session)
@@ -235,9 +233,7 @@ class MCPServerConnection:
         before = len(self._tools)
         self._absorb(result)
         if len(self._tools) != before:
-            log.info(
-                "mcp server %s — tool list changed, %d tools now", self.name, len(self._tools)
-            )
+            log.info("mcp server %s — tool list changed, %d tools now", self.name, len(self._tools))
 
     def tool_specs(self) -> list[ToolSpec]:
         """Current tools with their flat-namespace names. Empty until connected."""

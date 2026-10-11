@@ -341,7 +341,11 @@ async def test_audit_feed_carries_the_chain_verdict() -> None:
         response = await client.get("/api/audit", params={"token": "secret"})
     data = response.json()
     assert data["chain"] == {
-        "ok": True, "entries": 1, "first_bad_seq": None, "problem": None, "head_hash": "fake-hash-1",
+        "ok": True,
+        "entries": 1,
+        "first_bad_seq": None,
+        "problem": None,
+        "head_hash": "fake-hash-1",
     }
     entry = data["entries"][0]
     assert entry["seq"] == 1
@@ -513,17 +517,14 @@ async def test_apps_feed_reports_configured_connectors_and_capabilities() -> Non
     # the catalog rides along so the panel never hardcodes the chat-surface
     # list — hub apps are /api/connections' job, fetched live
     assert {c["key"] for c in data["catalog"]} == {"telegram", "discord", "slack"}
-    assert all(
-        set(c) == {"key", "name", "blurb", "kind"}
-        for c in data["catalog"]
-    )
+    assert all(set(c) == {"key", "name", "blurb", "kind"} for c in data["catalog"])
 
 
 async def test_apps_feed_marks_connectors_with_keys_and_live_servers() -> None:
     from aether.config import (
         AppConfig,
-        MessagingConfig,
         MCPServerConfig,
+        MessagingConfig,
         PlatformToggle,
         TransportConfig,
     )
@@ -676,7 +677,7 @@ async def test_events_feed_backfills_plain_for_legacy_agent_rows() -> None:
     async with _client(_app(None, events=store)) as client:
         response = await client.get("/api/events", params={"token": "secret"})
     by_id = {e["id"]: e for e in response.json()["events"]}
-    assert by_id[1]["payload"]["plain"] == "Checking the connected gmail account"
+    assert by_id[1]["payload"]["plain"] == "Checked the connected gmail account"
     assert by_id[2]["payload"]["plain"] == "Emailing Sam"  # the recorded sentence wins
 
 
@@ -826,7 +827,10 @@ async def test_workspace_feed_reports_every_file_with_parsed_entries(tmp_path) -
     assert body["needs_bootstrap"] is True
     assert set(body["files"]) == {"identity", "soul", "agents", "user", "memory"}
     user_entries = body["files"]["user"]["entries"]
-    assert any(e["text"] == "prefers concise notifications" and e["source"] == "agent" for e in user_entries)
+    assert any(
+        e["text"] == "prefers concise notifications" and e["source"] == "agent"
+        for e in user_entries
+    )
     assert "Name: Aether" in body["files"]["identity"]["raw"]
 
 
@@ -894,6 +898,8 @@ async def test_workspace_search_feed_finds_entries(tmp_path) -> None:
         )
     hits = response.json()["hits"]
     assert any("working on Aether" in h["text"] for h in hits)
+
+
 # /api/connections — the app hub, driven from the panel
 # ---------------------------------------------------------------------------
 
@@ -920,9 +926,7 @@ async def test_connections_feed_answers_empty_and_unconfigured_without_a_key() -
 
 async def test_connections_feed_lists_accounts_and_the_live_catalog() -> None:
     bridge = FakeComposioBridge(
-        accounts=[
-            ConnectedApp(id="acc-1", toolkit="gmail", status="ACTIVE", identity="me@x.test")
-        ]
+        accounts=[ConnectedApp(id="acc-1", toolkit="gmail", status="ACTIVE", identity="me@x.test")]
     )
     async with _client(_app(None, composio=bridge)) as client:
         response = await client.get("/api/connections", params={"token": "secret"})
@@ -932,8 +936,12 @@ async def test_connections_feed_lists_accounts_and_the_live_catalog() -> None:
         {"id": "acc-1", "toolkit": "gmail", "status": "ACTIVE", "identity": "me@x.test"}
     ]
     assert data["toolkits"] == [
-        {"slug": "gmail", "name": "Gmail",
-         "logo": "https://logo.test/gmail.png", "description": "your mail"},
+        {
+            "slug": "gmail",
+            "name": "Gmail",
+            "logo": "https://logo.test/gmail.png",
+            "description": "your mail",
+        },
         {"slug": "github", "name": "GitHub", "logo": "", "description": "your code"},
     ]
 
@@ -942,9 +950,7 @@ async def test_connect_returns_the_link_and_the_loop_watches_it() -> None:
     bridge = FakeComposioBridge()
     agent = FakeAgent()
     async with _client(_app(None, composio=bridge, agent=agent)) as client:
-        response = await client.post(
-            "/api/connections/gmail/connect", params={"token": "secret"}
-        )
+        response = await client.post("/api/connections/gmail/connect", params={"token": "secret"})
     assert response.json() == {"redirect_url": "https://hub.example.test/connect/gmail"}
     assert bridge.authorized == ["gmail"]
     # a panel-driven connect lands in chat exactly like a chat-driven one
@@ -954,26 +960,20 @@ async def test_connect_returns_the_link_and_the_loop_watches_it() -> None:
 async def test_connect_without_a_key_is_an_honest_503() -> None:
     app = _app(None, composio=FakeComposioBridge(available=False))
     async with _client(app) as client:
-        response = await client.post(
-            "/api/connections/gmail/connect", params={"token": "secret"}
-        )
+        response = await client.post("/api/connections/gmail/connect", params={"token": "secret"})
     assert response.status_code == 503
     assert "COMPOSIO_API_KEY" in response.json()["detail"]
 
 
 async def test_disconnect_removes_only_an_account_thats_ours() -> None:
     bridge = FakeComposioBridge(
-        accounts=[
-            ConnectedApp(id="acc-1", toolkit="gmail", status="ACTIVE", identity="me@x.test")
-        ]
+        accounts=[ConnectedApp(id="acc-1", toolkit="gmail", status="ACTIVE", identity="me@x.test")]
     )
     async with _client(_app(None, composio=bridge)) as client:
         response = await client.post(
             "/api/connections/acc-1/disconnect", params={"token": "secret"}
         )
-        missing = await client.post(
-            "/api/connections/acc-9/disconnect", params={"token": "secret"}
-        )
+        missing = await client.post("/api/connections/acc-9/disconnect", params={"token": "secret"})
     assert response.json() == {"disconnected": "gmail", "id": "acc-1"}
     assert bridge.disconnected == ["acc-1"]
     assert missing.status_code == 404

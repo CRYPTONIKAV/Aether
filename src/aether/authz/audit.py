@@ -140,11 +140,7 @@ def verification_text(verification: ChainVerification, newest_at: datetime | Non
     if verification.entries == 0:
         return "decision record: empty — nothing recorded yet."
     if verification.ok:
-        last = (
-            f", last act {_age(datetime.now(UTC), newest_at)}"
-            if newest_at is not None
-            else ""
-        )
+        last = f", last act {_age(datetime.now(UTC), newest_at)}" if newest_at is not None else ""
         plural = "s" if verification.entries != 1 else ""
         return (
             f"decision record: {verification.entries:,} decision{plural}, "
@@ -152,10 +148,7 @@ def verification_text(verification: ChainVerification, newest_at: datetime | Non
         )
     where = f" at entry #{verification.first_bad_seq}" if verification.first_bad_seq else ""
     problem = f" — {verification.problem}" if verification.problem else ""
-    return (
-        f"decision record: BROKEN{where}{problem}. "
-        "Everything from there on can't be trusted."
-    )
+    return f"decision record: BROKEN{where}{problem}. Everything from there on can't be trusted."
 
 
 class AuditLog:

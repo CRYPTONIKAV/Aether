@@ -131,7 +131,9 @@ def _plain_validation_error(exc: ValidationError, path: str) -> str:
         need = f"it must be one of: {options}"
     else:
         need = str(err.get("msg", "that value doesn't fit"))
-    shown = "nothing" if got is None else "that value" if isinstance(got, (dict, list)) else repr(got)
+    shown = (
+        "nothing" if got is None else "that value" if isinstance(got, (dict, list)) else repr(got)
+    )
     return f"{path} can't be {shown} — {need}."
 
 
@@ -296,9 +298,7 @@ class ConfigManager:
 
     # -- writes -------------------------------------------------------------------
 
-    async def set(
-        self, *, op: str, path: str, value: Any = None, source: str = "chat"
-    ) -> str:
+    async def set(self, *, op: str, path: str, value: Any = None, source: str = "chat") -> str:
         """One change, end to end: validate → persist → mutate live → apply
         hooks. Never raises — refusals come back as plain words, the same
         words the model relays. For op=set the callers guarantee a value is
@@ -327,7 +327,9 @@ class ConfigManager:
     async def _write(self, resolved: _Resolved, value: Any, source: str) -> str:
         """op=set on any path — scalar, list, or item."""
         validated = self._validate_value(resolved, value)
-        old_entries = list(getattr(resolved.container, resolved.field)) if resolved.kind == "list" else []
+        old_entries = (
+            list(getattr(resolved.container, resolved.field)) if resolved.kind == "list" else []
+        )
         await self._store.upsert(resolved.canonical, self._persist_value(validated, resolved.kind))
         if resolved.root == "mcp_servers" and resolved.kind == "list":
             # names that left the list take their item rows with them
@@ -352,7 +354,9 @@ class ConfigManager:
                 f"{resolved.container.name!r}, so the setting the list carries stands{note}."
             )
         if resolved.kind == "list":
-            base_list = [e.model_copy(deep=True) for e in getattr(resolved.base_container, resolved.field)]
+            base_list = [
+                e.model_copy(deep=True) for e in getattr(resolved.base_container, resolved.field)
+            ]
             getattr(resolved.container, resolved.field)[:] = base_list
             body = f"{path} reset to config.yaml ({len(base_list)} entries)."
         else:
@@ -401,7 +405,9 @@ class ConfigManager:
 
     # -- list entries ------------------------------------------------------------
 
-    def _allowlist_change(self, current: list[ContactRule], value: Any, op: str) -> list[ContactRule]:
+    def _allowlist_change(
+        self, current: list[ContactRule], value: Any, op: str
+    ) -> list[ContactRule]:
         if isinstance(value, dict):
             try:
                 entry = ContactRule.model_validate(value)
@@ -419,7 +425,9 @@ class ConfigManager:
                     "an allowlist entry is a platform and a handle — e.g. telegram @friend."
                 )
         else:
-            raise ConfigError("an allowlist entry is a platform and a handle — e.g. telegram @friend.")
+            raise ConfigError(
+                "an allowlist entry is a platform and a handle — e.g. telegram @friend."
+            )
         if not entry.handle.strip():
             raise ConfigError("an allowlist entry needs a handle.")
         if op == "add":
@@ -428,7 +436,9 @@ class ConfigManager:
             return current + [entry]
         # remove: a bare handle matches any platform; a named platform must match too
         if explicit_platform:
-            matches = [r for r in current if r.platform == entry.platform and r.handle == entry.handle]
+            matches = [
+                r for r in current if r.platform == entry.platform and r.handle == entry.handle
+            ]
         else:
             matches = [r for r in current if r.handle == entry.handle]
         if not matches:
@@ -481,15 +491,22 @@ class ConfigManager:
             if entry.param_pattern:
                 re.compile(entry.param_pattern)
         except re.error as exc:
-            raise ConfigError(f"that rule's pattern {entry.tool_pattern!r} isn't valid regex: {exc}") from exc
-        if any(r.tool_pattern == entry.tool_pattern and r.param_pattern == entry.param_pattern for r in current):
+            raise ConfigError(
+                f"that rule's pattern {entry.tool_pattern!r} isn't valid regex: {exc}"
+            ) from exc
+        if any(
+            r.tool_pattern == entry.tool_pattern and r.param_pattern == entry.param_pattern
+            for r in current
+        ):
             raise ConfigError(
                 f"a rule for {entry.tool_pattern!r} already exists — remove it "
                 "first if you mean to replace it."
             )
         return current + [entry]
 
-    def _mcp_servers_change(self, current: list[MCPServerConfig], value: Any, op: str) -> list[MCPServerConfig]:
+    def _mcp_servers_change(
+        self, current: list[MCPServerConfig], value: Any, op: str
+    ) -> list[MCPServerConfig]:
         if op != "add":
             name = str(value.get("name", "") if isinstance(value, dict) else value).strip()
             if not name:
@@ -659,7 +676,12 @@ class ConfigManager:
         if self._resolver is None:
             return self._settings
         values: dict[str, str] = {}
-        for field in ("telegram_bot_token", "discord_bot_token", "slack_bot_token", "slack_app_token"):
+        for field in (
+            "telegram_bot_token",
+            "discord_bot_token",
+            "slack_bot_token",
+            "slack_app_token",
+        ):
             value = await self._resolver.resolve(field.upper())
             if value:
                 values[field] = value
@@ -684,7 +706,9 @@ class ConfigManager:
         notes = [self._server_note(conn) for conn in diff["started"]]
         restarted = {c.name for c in diff["started"]}
         if gone := [n for n in diff["stopped"] if n not in restarted]:
-            notes.append(f"{', '.join(gone)} stopped — their actions are gone until they're on again")
+            notes.append(
+                f"{', '.join(gone)} stopped — their actions are gone until they're on again"
+            )
         if not notes:
             return ""
         return " — " + "; ".join(notes)
@@ -714,19 +738,33 @@ class ConfigManager:
         if root == "mcp_servers":
             if not rest:
                 return _Resolved(
-                    root, self._live, "mcp_servers", "list", AppConfig,
-                    MCPServerConfig, self._base, "mcp_servers",
+                    root,
+                    self._live,
+                    "mcp_servers",
+                    "list",
+                    AppConfig,
+                    MCPServerConfig,
+                    self._base,
+                    "mcp_servers",
                 )
             if len(rest) == 2 and rest[1].lower() == "enabled":
                 name = rest[0]
                 live_item = next((s for s in self._live.mcp_servers if s.name == name), None)
                 base_item = next((s for s in self._base.mcp_servers if s.name == name), None)
                 if live_item is None:
-                    known = ", ".join(s.name for s in self._live.mcp_servers) or "none are configured"
+                    known = (
+                        ", ".join(s.name for s in self._live.mcp_servers) or "none are configured"
+                    )
                     raise ConfigError(f"no app named {name!r} in mcp_servers ({known}).")
                 return _Resolved(
-                    root, live_item, "enabled", "item", MCPServerConfig, None,
-                    base_item, f"mcp_servers.{name}.enabled",
+                    root,
+                    live_item,
+                    "enabled",
+                    "item",
+                    MCPServerConfig,
+                    None,
+                    base_item,
+                    f"mcp_servers.{name}.enabled",
                 )
             raise ConfigError(
                 "mcp_servers paths are 'mcp_servers' (the whole list) or "
@@ -735,12 +773,21 @@ class ConfigManager:
 
         if root == "messaging":
             platform = rest[0].lower() if rest else ""
-            if len(rest) == 2 and rest[1].lower() == "enabled" and platform in type(self._live.messaging).model_fields:
+            if (
+                len(rest) == 2
+                and rest[1].lower() == "enabled"
+                and platform in type(self._live.messaging).model_fields
+            ):
                 canonical = f"messaging.{platform}.enabled"
                 return _Resolved(
-                    root, getattr(self._live.messaging, platform), "enabled", "scalar",
-                    type(getattr(self._live.messaging, platform)), None,
-                    getattr(self._base.messaging, platform), canonical,
+                    root,
+                    getattr(self._live.messaging, platform),
+                    "enabled",
+                    "scalar",
+                    type(getattr(self._live.messaging, platform)),
+                    None,
+                    getattr(self._base.messaging, platform),
+                    canonical,
                 )
             raise ConfigError(
                 "messaging paths look like messaging.<platform>.enabled — "
@@ -764,17 +811,35 @@ class ConfigManager:
             )
         if (root, actual) == ("contacts", "allowlist"):
             return _Resolved(
-                root, section, actual, "list", type(section), ContactRule,
-                getattr(self._base, root), f"{root}.{actual}",
+                root,
+                section,
+                actual,
+                "list",
+                type(section),
+                ContactRule,
+                getattr(self._base, root),
+                f"{root}.{actual}",
             )
         if (root, actual) == ("authz", "rules"):
             return _Resolved(
-                root, section, actual, "list", type(section), AuthzRule,
-                getattr(self._base, root), f"{root}.{actual}",
+                root,
+                section,
+                actual,
+                "list",
+                type(section),
+                AuthzRule,
+                getattr(self._base, root),
+                f"{root}.{actual}",
             )
         return _Resolved(
-            root, section, actual, "scalar", type(section), None,
-            getattr(self._base, root), f"{root}.{actual}",
+            root,
+            section,
+            actual,
+            "scalar",
+            type(section),
+            None,
+            getattr(self._base, root),
+            f"{root}.{actual}",
         )
 
     def _known_paths(self) -> list[str]:
@@ -789,7 +854,9 @@ class ConfigManager:
             ("authz", type(self._live.authz)),
         ):
             paths.extend(f"{section_name}.{field}" for field in model.model_fields)
-        paths.extend(f"messaging.{platform}.enabled" for platform in type(self._live.messaging).model_fields)
+        paths.extend(
+            f"messaging.{platform}.enabled" for platform in type(self._live.messaging).model_fields
+        )
         return paths
 
     def _suggest(self, path: str) -> str:
@@ -799,7 +866,9 @@ class ConfigManager:
             from rapidfuzz import process
         except ImportError:  # pragma: no cover - the dependency is declared
             return ""
-        match = process.extractOne(path.lower(), [p.lower() for p in self._known_paths()], score_cutoff=70)
+        match = process.extractOne(
+            path.lower(), [p.lower() for p in self._known_paths()], score_cutoff=70
+        )
         if match is None:
             return ""
         return f" — did you mean {match[0]}?"
@@ -879,7 +948,11 @@ class ConfigManager:
             return f"messaging: telegram {onoff(m.telegram)} · discord {onoff(m.discord)} · slack {onoff(m.slack)}"
         if name == "contacts":
             c = live.contacts
-            senders = f" · {len(c.allowlist)} allowed senders" if c.allowlist else " · everyone can reach me"
+            senders = (
+                f" · {len(c.allowlist)} allowed senders"
+                if c.allowlist
+                else " · everyone can reach me"
+            )
             return f"contacts: allowlist {c.mode}{senders}"
         if name == "authz":
             a = live.authz
