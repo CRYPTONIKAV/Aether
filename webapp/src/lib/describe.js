@@ -290,6 +290,26 @@ export function describeEvent(e) {
     const people = Array.isArray(p.people) && p.people.length ? ` · people: ${p.people.join(", ")}` : "";
     return { title: `Looked at your screen${p.app ? ` — ${p.app}` : ""}`, detail: `${p.summary || p.user_note || ""}${people}` };
   }
+  if (e.kind === "shared_image") {
+    // the handle lives under _sender like every user-authored event
+    const handle = p.handle || (p._sender && p._sender.handle) || "";
+    const platform = (p._sender && p._sender.platform) || e.source;
+    const who = handle ? personName(platform, handle) : "someone";
+    const people = Array.isArray(p.people) && p.people.length ? ` · people: ${p.people.join(", ")}` : "";
+    const name = p.filename ? ` — ${p.filename}` : "";
+    const detail = `${p.description || p.caption || ""}${people}`;
+    return { title: who === "you" ? `You shared an image${name}` : `${who} shared an image${name}`, detail };
+  }
+  if (e.kind === "shared_doc") {
+    const handle = p.handle || (p._sender && p._sender.handle) || "";
+    const platform = (p._sender && p._sender.platform) || e.source;
+    const who = handle ? personName(platform, handle) : "someone";
+    const name = p.filename ? ` — ${p.filename}` : "";
+    // file content is arbitrary text — plainText collapses any JSON blob a
+    // config file might contain before it renders
+    const detail = p.text ? quote(plainText(p.text), 200) : "No readable text was found in it";
+    return { title: who === "you" ? `You shared a document${name}` : `${who} shared a document${name}`, detail };
+  }
   if (e.kind.startsWith("poll:")) {
     const noun = DEFAULT_NOUN[app] || "updates";
     const detail = p.result !== undefined ? summarizeResult(p.result)

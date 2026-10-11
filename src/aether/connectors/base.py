@@ -16,6 +16,29 @@ class ConnectorUnavailableError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class Attachment:
+    """One file the user sent with a chat message. The connector that owns
+    the platform credentials downloads the bytes before emitting; the loop's
+    attachment processor turns them into memory."""
+
+    kind: str  # "image" | "doc"
+    filename: str
+    media_type: str  # best-effort MIME type, "" when the platform doesn't say
+    data: bytes
+
+
+_IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic"})
+
+
+def classify_attachment(filename: str, media_type: str = "") -> str:
+    """ "image" when the platform or the filename says so, "doc" otherwise."""
+    if (media_type or "").startswith("image/"):
+        return "image"
+    name = (filename or "").lower()
+    return "image" if any(name.endswith(ext) for ext in _IMAGE_EXTENSIONS) else "doc"
+
+
+@dataclass(frozen=True)
 class InboundMessage:
     """One message from the user on some surface.
 
@@ -25,6 +48,9 @@ class InboundMessage:
     `reply_to_id`/`reply_to_text` carry what the message answers, when the
     platform says so — the id is what links a later "why?" back to the trace
     of the message it's about.
+
+    `attachments` are the files the message carried, bytes already
+    downloaded by the connector.
     """
 
     surface: str  # "telegram" | "discord" | "slack" | "web"
@@ -33,6 +59,7 @@ class InboundMessage:
     chat_ref: str  # opaque, surface-specific reply target
     reply_to_id: str = ""  # platform id of the message this one answers, if any
     reply_to_text: str = ""  # its text, when the platform hands it over
+    attachments: tuple[Attachment, ...] = ()
 
 
 InboundHandler = Callable[[InboundMessage], Awaitable[None]]

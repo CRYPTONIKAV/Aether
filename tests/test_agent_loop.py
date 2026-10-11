@@ -60,7 +60,7 @@ from aether.config import (
 )
 from aether.connectors.base import InboundMessage
 from aether.connectors.registry import ToolRegistry
-from aether.llm.types import ToolCall, ToolResult, ToolSpec, Turn
+from aether.llm.types import ImageBlock, ToolCall, ToolResult, ToolSpec, Turn
 from aether.memory.events import Event, IngestResult
 from aether.scheduler.jobs import ScheduledAction
 from aether.secret_env import EnvResolver
@@ -112,6 +112,7 @@ class LoopKit:
         config_manager: FakeConfigManager | None = None,
         workspace: Any = None,
         transcript: Any = None,
+        attachments: Any = None,
     ):
         self.tools = ToolRegistry()
         self.events = FakeEventStore()
@@ -145,6 +146,7 @@ class LoopKit:
             config_manager=config_manager,
             workspace=workspace,
             transcript=transcript,
+            attachments=attachments,
         )
         if config_manager is not None:
             # the real native config tools, so a /config write goes through
@@ -2251,3 +2253,93 @@ async def test_a_failed_connect_says_so_in_chat(tmp_path) -> None:
         "the gmail connection didn't finish — the link may have expired. "
         "/apps add gmail to try again."
     )
+
+
+# ---------------------------------------------------------------------------
+# shared files: the drain turns them into memory, past the allowlist
+# ---------------------------------------------------------------------------
+
+from aether.connectors.attachments import AttachmentProcessor  # noqa: E402
+from aether.connectors.base import Attachment  # noqa: E402
+
+
+def _shared_image_message(text: str = "") -> InboundMessage:
+    return InboundMessage(
+        surface="telegram",
+        handle="@vedant",
+        text=text,
+        chat_ref="1",
+        attachments=(Attachment("image", "cat.png", "image/png", b"png-bytes"),),
+    )
+
+
+async def test_a_shared_image_becomes_memory_in_the_same_tick() -> None:
+    vision = FakeProvider([Turn(text='{"description": "a ginger cat"}')])
+    provider = FakeProvider([Turn(text="nice cat!")])
+    kit = LoopKit(provider)
+    kit.loop._attachments = AttachmentProcessor(FakeRegistry(vision), kit.events)
+
+    kit.loop.submit_message(_shared_image_message("is this our cat?"))
+    await kit.loop._tick()
+
+    kinds = [r["kind"] for r in kit.events.ingested]
+    assert kinds == ["chat_message", "shared_image"]
+    record = kit.events.ingested[1]
+    assert record["source"] == "telegram"
+    assert record["payload"]["description"] == "a ginger cat"
+    assert record["payload"]["caption"] == "is this our cat?"
+    # the vision turn carried the actual image
+    assert any(isinstance(b, ImageBlock) for b in vision.calls[0][1][0].blocks)
+    # the agent's own turn ran and saw the message — its reply is the only
+    # thing the surface heard; no robotic note (the image was not blind)
+    assert provider.calls
+    assert kit.connector.sent == ["nice cat!"]
+
+
+async def test_no_vision_means_one_plain_note_and_no_image_memory() -> None:
+    provider = FakeProvider([Turn(text="ok")])
+    kit = LoopKit(provider)
+    kit.loop._attachments = AttachmentProcessor(FakeRegistry(None), kit.events)
+
+    kit.loop.submit_message(_shared_image_message("look at this"))
+    await kit.loop._tick()
+
+    # the plain note lands first, then the turn's own reply
+    assert kit.connector.sent[0] == (
+        "I can't see this image yet — no vision model is set. Set one with "
+        "/config (llm.vision_model), or pick a main model that can read "
+        "images, and I'll see what you send."
+    )
+    assert [r["kind"] for r in kit.events.ingested] == ["chat_message"]
+
+
+async def test_a_filtered_senders_files_are_never_processed() -> None:
+    vision = FakeProvider([Turn(text='{"description": "should never run"}')])
+    provider = FakeProvider([])
+    kit = LoopKit(provider)
+    kit.loop._attachments = AttachmentProcessor(FakeRegistry(vision), kit.events)
+    kit.events.ingest_result = IngestResult(stored=False, reason="filtered:contacts")
+
+    kit.loop.submit_message(_shared_image_message("from a stranger"))
+    await kit.loop._tick()
+
+    assert vision.calls == []  # the bytes never reached the vision model
+    assert kit.connector.sent == []  # and nothing was said back
+
+
+class _ExplodingProcessor:
+    async def process(self, message) -> list:
+        raise RuntimeError("boom")
+
+
+async def test_attachment_processing_failure_never_kills_the_tick() -> None:
+    provider = FakeProvider([Turn(text="got your message")])
+    kit = LoopKit(provider)
+    kit.loop._attachments = _ExplodingProcessor()
+
+    kit.loop.submit_message(_shared_image_message("here"))
+    await kit.loop._tick()
+
+    # the tick survived: the message itself became memory, the turn ran
+    assert [r["kind"] for r in kit.events.ingested] == ["chat_message"]
+    assert provider.calls

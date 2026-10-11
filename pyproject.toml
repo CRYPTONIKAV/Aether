@@ -25,6 +25,7 @@ dependencies = [
     "python-telegram-bot>=22.0",
     "py-cord>=2.6",
     "slack-bolt>=1.20",
+    "pypdf>=5.0",  # text extraction from shared PDFs (chat attachments)
 ]
 
 [project.optional-dependencies]
