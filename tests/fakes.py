@@ -510,11 +510,9 @@ class FakeEventStore:
         self,
         events: dict[int, Event] | None = None,
         recent_counts: dict[str, int] | None = None,
-        search_results: list[Event] | None = None,
     ) -> None:
         self.events = dict(events or {})
         self.recent_counts = dict(recent_counts or {})
-        self.search_results = list(search_results or [])
         self.updates: list[tuple[int, float, bool, dict]] = []
         self.ingested: list[dict] = []
         # set to override what ingest() returns (e.g. filtered:contacts)
@@ -542,9 +540,6 @@ class FakeEventStore:
 
     async def recent(self, limit: int = 50) -> list[Event]:
         return [self.events[i] for i in sorted(self.events, reverse=True)][:limit]
-
-    async def search(self, query: str, limit: int = 10, scan_window: int = 200) -> list[Event]:
-        return self.search_results[:limit]
 
     async def count_recent(self, source: str, hours: float = 1.0) -> int:
         return self.recent_counts.get(source, 0)
@@ -607,6 +602,16 @@ class FakeVectorMemory:
 
     async def search(self, query: str, limit: int = 8, min_similarity: float = 0.35):
         self.queries.append(query)
+        return self.hits[:limit]
+
+    # the loop's recall path: the query embedding is split from the SQL so
+    # a turn can overlap the two — the double records at the embed step,
+    # where the query text still exists
+    async def embed_query(self, query: str) -> list[float] | None:
+        self.queries.append(query)
+        return [1.0]
+
+    async def search_vector(self, q, limit: int = 8, min_similarity: float = 0.35):
         return self.hits[:limit]
 
     async def index_event(self, event_id, source, kind, payload, occurred_at):

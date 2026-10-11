@@ -135,15 +135,15 @@ def create_app(
 
         # --- vector memory: free embeddings make recall semantic ----------
         # best effort, same as the providers — without a key the layer is a
-        # quiet no-op and retrieval falls back to keyword search
+        # quiet no-op and memory search reports the failure plainly
         embedder = None
         if config.llm.embedding_model and settings.gemini_api_key:
             try:
                 embedder = GeminiEmbedder.build(settings.gemini_api_key, config.llm.embedding_model)
             except ProviderError as exc:
                 log.warning(
-                    "embedding model unavailable (%s) — memory search stays "
-                    "keyword-based until the key is set",
+                    "embedding model unavailable (%s) — memory search is "
+                    "unavailable until the key is set",
                     exc,
                 )
         vectors = VectorMemory(pool, cipher, embedder)

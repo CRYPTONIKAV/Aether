@@ -142,18 +142,6 @@ async def test_memorable_events_surface_in_reads(db) -> None:
     assert await events.count_recent("mail", hours=1) == 2
 
 
-@pytest.mark.integration
-async def test_search_scores_the_recent_window(db) -> None:
-    events, _, _ = await _fresh(db)
-    await events.ingest(
-        source="mail", kind="message", payload={"text": "quarterly tax filing deadline is april 15"}
-    )
-    await events.ingest(source="telegram", kind="message", payload={"text": "movie night friday"})
-
-    hits = await events.search("tax filing", limit=2)
-    assert hits and hits[0].payload["text"].startswith("quarterly")
-
-
 # ---------------------------------------------------------------------------
 # the ingest hook: every stored event is indexed exactly once
 # ---------------------------------------------------------------------------
@@ -177,6 +165,8 @@ async def test_ingest_indexes_the_event_and_a_duplicate_does_not_reindex(db) -> 
         source="telegram", kind="chat_message", payload={"text": "hello from the hook test"}
     )
     assert (first.stored, second.reason) == (True, "duplicate")
+    # the hook indexes on a background task — drain it before asserting
+    await vectors.wait_idle()
 
     assert first.event_id is not None
     row = await db.fetchrow(

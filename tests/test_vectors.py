@@ -63,8 +63,8 @@ def test_split_text_respects_the_cap_and_overlaps() -> None:
 async def test_disabled_vector_memory_never_touches_the_db(db) -> None:
     vectors, _ = _store(db, embedder=None)
     assert vectors.enabled is False
-    # every public method stays a safe no-op — retrieval falls back to the
-    # keyword scan, indexing just doesn't happen
+    # every public method stays a safe no-op — memory search then says the
+    # plain failure message, indexing just doesn't happen
     await vectors.index_event(9999, "telegram", "chat_message", {"text": "hi"}, start_of_today())
     await vectors.index_doc(9999, "telegram", "a.pdf", [("page 1", "text")])
     assert await vectors.backfill() is None
@@ -96,6 +96,9 @@ async def test_index_event_chunks_and_search_finds_semantic_neighbors(db) -> Non
         kind="chat_message",
         payload={"text": "pizza place order number four two two"},
     )
+    # indexing runs on a background task — ingest returns before the
+    # embed lands, so wait for the in-flight work before asserting
+    await vectors.wait_idle()
     hits = await vectors.search("when is the tax deadline?", limit=5)
     assert hits, "expected at least the tax message to come back"
     assert "tax" in hits[0].text

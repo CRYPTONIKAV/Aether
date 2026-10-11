@@ -25,7 +25,6 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import asyncpg
-from rapidfuzz import fuzz
 
 from ..authz.audit import AuditLog
 from ..config import ContactsConfig
@@ -177,8 +176,10 @@ class EventStore:
         # the single indexing choke point: outside the transaction (the FK
         # row is committed), duplicates never reach it — one event, one
         # indexing. shared_doc is skipped by the vector layer itself (the
-        # attachment processor indexes the full document text); a failure
-        # leaves indexed_at unset for the loop's backfill to retry.
+        # attachment processor indexes the full document text). The call
+        # returns at once — the embed+insert runs on a background task, so
+        # ingest never waits on the embedding API; a failure leaves
+        # indexed_at unset for the loop's backfill to retry.
         if self._indexer is not None:
             try:
                 await self._indexer.index_event(
@@ -257,22 +258,6 @@ class EventStore:
             "SELECT COUNT(*) FROM events WHERE memorable AND occurred_at >= $1",
             since,
         )
-
-    async def search(self, query: str, limit: int = 10, scan_window: int = 200) -> list[Event]:
-        """Fuzzy search over the recent (decrypted) window. Payloads are
-        encrypted at rest, so there is no index to query — score in code."""
-        rows = await self._pool.fetch(
-            "SELECT id, source, kind, occurred_at, payload_enc, salience_score,"
-            " memorable, meta FROM events ORDER BY occurred_at DESC LIMIT $1",
-            scan_window,
-        )
-        scored: list[tuple[float, Event]] = []
-        for row in rows:
-            event = self._to_event(row)
-            score = fuzz.partial_ratio(query.lower(), event_text(event).lower())
-            scored.append((score, event))
-        scored.sort(key=lambda t: t[0], reverse=True)
-        return [event for score, event in scored[:limit] if score > 40]
 
     # -- updates ---------------------------------------------------------------
 

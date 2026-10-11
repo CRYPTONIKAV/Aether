@@ -25,7 +25,6 @@ from ..workspace import SecretRejected, WorkspaceWriteError
 log = logging.getLogger("aether.agent.tools")
 
 # what the tools need, expressed as protocols the loop actually owns
-EventSearch = Callable[..., Awaitable[Any]]
 NativeHandler = Callable[[dict[str, Any]], Awaitable[str]]
 
 
@@ -58,6 +57,15 @@ def _parse_int_param(
     except (TypeError, ValueError):
         return None
     return max(minimum, value) if minimum is not None else value
+
+
+# the one plain reply every hard failure gives the user — a dead model
+# turn and a dead embedding layer say the same thing, never a technical
+# detail. memory_search returns it when the semantic layer is missing or
+# failing, so the model relays exactly this.
+FAILURE_REPLY = (
+    "Something went wrong on my side — I couldn't finish that just now. Nothing else is affected."
+)
 
 
 # how a tool call is said in plain words at each moment it reaches the
@@ -500,40 +508,24 @@ def register_native_tools(
             return _clip(json.dumps(event.payload, default=str, ensure_ascii=False), 2000)
         if not query:
             return "memory_search needs a query."
-        if vectors is not None:
-            try:
-                hits = await vectors.search(query, limit=limit)
-            except Exception:
-                hits = []
-            if hits:
-                lines = []
-                for hit in hits:
-                    where = ", ".join(part for part in (hit.filename, hit.location) if part)
-                    lines.append(
-                        f"[{hit.event_id}] {hit.occurred_at:%Y-%m-%d %H:%M} "
-                        f"{hit.source}/{hit.kind}"
-                        + (f" — {where}:\n" if where else ":\n")
-                        + hit.text
-                    )
-                return "\n".join(lines)
-        found = await events.search(query, limit=limit)
-        if not found:
+        # semantic or nothing — a missing or failing embedding layer gets
+        # the same plain reply a dead model turn gets, so the user hears
+        # one honest message instead of a degraded guess
+        if vectors is None or not vectors.enabled:
+            return FAILURE_REPLY
+        try:
+            hits = await vectors.search(query, limit=limit)
+        except Exception:
+            log.warning("memory_search failed — embedding layer error", exc_info=True)
+            return FAILURE_REPLY
+        if not hits:
             return "No matching memories."
         lines = []
-        for e in found:
-            p = e.payload or {}
-            if p.get("text") and p.get("filename"):
-                # a shared document — the one channel where the model can
-                # re-read what the file said; the JSON dump would clip the
-                # text away to nothing
-                lines.append(
-                    f"[{e.id}] {e.occurred_at:%Y-%m-%d %H:%M} {e.source}/{e.kind} "
-                    f"— {p.get('filename')}:\n" + _clip(str(p.get("text", "")), 2000)
-                )
-                continue
+        for hit in hits:
+            where = ", ".join(part for part in (hit.filename, hit.location) if part)
             lines.append(
-                f"[{e.id}] {e.occurred_at:%Y-%m-%d %H:%M} {e.source}/{e.kind}: "
-                + _clip(json.dumps(e.payload, default=str, ensure_ascii=False))
+                f"[{hit.event_id}] {hit.occurred_at:%Y-%m-%d %H:%M} "
+                f"{hit.source}/{hit.kind}" + (f" — {where}:\n" if where else ":\n") + hit.text
             )
         return "\n".join(lines)
 

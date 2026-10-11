@@ -69,7 +69,7 @@ class LLMConfig(BaseModel):
     vision_model: str | None = None
     salience_model: str | None = None
     # the free embedding model that makes memory semantically searchable;
-    # none (or a missing Gemini key) falls back to keyword search
+    # none (or a missing Gemini key) leaves memory search unavailable
     embedding_model: str | None = "gemini-embedding-001"
     max_tokens: int = 16000
     # Ollama's vision ability depends entirely on which model was pulled;

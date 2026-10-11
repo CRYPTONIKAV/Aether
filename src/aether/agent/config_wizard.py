@@ -174,7 +174,7 @@ _SECTIONS: tuple[_Section, ...] = (
                 "embedding_model",
                 "a small free model that makes my memory searchable",
                 "which embedding model should search my memory? (currently "
-                "{cur} — or none for keyword search)",
+                "{cur} — or none to turn search off)",
             ),
             _Setting(
                 "llm.ollama_vision",

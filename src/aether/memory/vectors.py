@@ -19,12 +19,14 @@ event payloads; the embedding itself is derived data, stored plain.
 
 Every public method is failure-tolerant: retrieval must never kill a
 tick, and a missing embedder turns the whole layer into a quiet no-op
-(keyword search stays the fallback).
+(memory search then reports the failure plainly).
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import Coroutine
 from dataclasses import dataclass
 from datetime import datetime
 from types import SimpleNamespace
@@ -90,6 +92,9 @@ class VectorMemory:
         self._pool = pool
         self._cipher = cipher
         self._embedder = embedder
+        # background index tasks in flight — tracked so the loop is never
+        # garbage-collected mid-await and shutdown can drain them
+        self._inflight: set[asyncio.Task[None]] = set()
 
     @property
     def enabled(self) -> bool:
@@ -107,14 +112,43 @@ class VectorMemory:
     ) -> None:
         """One event in, chunks out — the generic path EventStore calls on
         every stored ingest. `shared_doc` is skipped: the attachment
-        processor indexes the full document text itself. An event with
-        nothing meaningful to embed is marked attempted so backfill stops
-        rediscovering it."""
+        processor indexes the full document text itself. The embed+insert
+        runs on a background task so ingest returns at once — indexing is
+        catch-up work, never part of the reply path. A failure leaves
+        indexed_at unset, and the loop's backfill heals it."""
         if not self.enabled or kind in _RICH_INDEX_KINDS:
             return
-        text = _chunk_text(source, kind, payload)
-        await self._index_chunks(event_id, source, kind, "", text, occurred_at)
+        parts = _chunk_text(source, kind, payload)
+        self._spawn(self._index_and_mark(event_id, source, kind, "", parts, occurred_at))
+
+    async def _index_and_mark(
+        self,
+        event_id: int,
+        source: str,
+        kind: str,
+        filename: str,
+        parts: list[tuple[str, str]],
+        occurred_at: datetime,
+    ) -> None:
+        await self._index_chunks(event_id, source, kind, filename, parts, occurred_at)
         await self._mark_indexed(event_id)
+
+    def _spawn(self, coro: Coroutine[Any, Any, None]) -> None:
+        task = asyncio.create_task(coro)
+        self._inflight.add(task)
+        task.add_done_callback(self._reap)
+
+    def _reap(self, task: asyncio.Task[None]) -> None:
+        self._inflight.discard(task)
+        if not task.cancelled() and (exc := task.exception()) is not None:
+            # the event stays indexed_at NULL — backfill retries it
+            log.warning("background event indexing failed — backfill will retry", exc_info=exc)
+
+    async def wait_idle(self) -> None:
+        """Every background index currently in flight — shutdowns and tests
+        wait here so they never assert on work still mid-air."""
+        while self._inflight:
+            await asyncio.gather(*self._inflight, return_exceptions=True)
 
     async def index_doc(
         self, event_id: int, source: str, filename: str, parts: list[tuple[str, str]]
@@ -243,17 +277,32 @@ class VectorMemory:
         """Semantic search: embed the question, rank every chunk by cosine.
         Postgres does the dot product over `real[]`; the query norm is
         precomputed so the SQL only divides. Hits under the bar drop."""
-        if not self.enabled or not query.strip():
+        q = await self.embed_query(query)
+        if q is None:
             return []
+        return await self.search_vector(q, limit, min_similarity)
+
+    async def embed_query(self, query: str) -> list[float] | None:
+        """The embedding half of search, on its own so a turn can start it
+        early and let the round trip overlap its context assembly. None on
+        any failure — that turn simply recalls nothing."""
+        if not self.enabled or not query.strip():
+            return None
         assert self._embedder is not None
         try:
             vectors = await self._embedder.embed([query], task="query")
         except Exception:
             log.warning("query embedding failed — no semantic recall this turn", exc_info=True)
+            return None
+        return vectors[0] if vectors else None
+
+    async def search_vector(
+        self, q: list[float], limit: int = 8, min_similarity: float = 0.35
+    ) -> list[MemoryHit]:
+        """The SQL half: rank every chunk of this model's space by cosine
+        against an already-embedded query."""
+        if self._embedder is None:
             return []
-        if not vectors:
-            return []
-        q = vectors[0]
         qnorm = vector_norm(q) or 1.0
         rows = await self._pool.fetch(
             "SELECT id, event_id, source, kind, filename, location, text_enc,"

@@ -7,7 +7,7 @@ quality/size point. A future adapter (e.g. Jina's free tier) only has to
 implement `Embedder`.
 
 Failures here must never cost the caller anything: indexing skips a batch
-and retries via backfill, retrieval falls back to keyword search.
+and retries via backfill, retrieval reports the failure plainly.
 """
 
 from __future__ import annotations
@@ -70,8 +70,7 @@ class GeminiEmbedder:
     def build(cls, api_key: str, model: str = "gemini-embedding-001") -> GeminiEmbedder:
         if not api_key:
             raise ProviderError(
-                "no GEMINI_API_KEY — vector memory stays off and retrieval "
-                "falls back to keyword search"
+                "no GEMINI_API_KEY — vector memory stays off and memory search is unavailable"
             )
         return cls(genai.Client(api_key=api_key), model)
 
@@ -104,7 +103,9 @@ class GeminiEmbedder:
     async def embed(
         self, texts: list[str], task: Literal["query", "document"] = "document"
     ) -> list[list[float]]:
-        out: list[list[float]] = []
-        for start in range(0, len(texts), _BATCH):
-            out.extend(await self._embed_batch(texts[start : start + _BATCH], task))
-        return out
+        # batches fly concurrently — a 200-page pdf is four requests, not
+        # four round trips. gather preserves the input order, so callers
+        # can still zip results against their parts
+        batches = [texts[start : start + _BATCH] for start in range(0, len(texts), _BATCH)]
+        results = await asyncio.gather(*(self._embed_batch(batch, task) for batch in batches))
+        return [vector for batch in results for vector in batch]

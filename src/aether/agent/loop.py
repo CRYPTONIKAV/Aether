@@ -66,6 +66,7 @@ from .config_wizard import coerce_config_value as _coerce_config_value
 from .prompts import SYSTEM_PROMPT
 from .settings import AgentSettings
 from .tools import (
+    FAILURE_REPLY,
     describe_ask,
     describe_call,
     describe_dismissed,
@@ -377,8 +378,8 @@ class AgentLoop:
         # allowlist, in the drain, so a filtered sender's files are never seen
         self._attachments = attachments
         # the vector half of memory: chunked, embedded, sourced — retrieval
-        # is semantic and automatic, a missing embedder just falls back to
-        # the keyword scan
+        # is semantic and automatic; a missing embedder means no recall,
+        # and memory_search says the plain failure message
         self._vectors = vectors
         # the guided /config walk in progress, if any — memory only
         self._wizard: ConfigWizard | None = None
@@ -404,6 +405,8 @@ class AgentLoop:
         self._queue: asyncio.Queue[InboundMessage] = asyncio.Queue()
         self._woken = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
+        # the vector backfill loop's task — None until start() arms it
+        self._backfill_task: asyncio.Task[None] | None = None
         self._running = False
         self._last_event_id = 0
         self._poll_targets: dict[str, tuple[str, PollTool]] = {}
@@ -420,14 +423,39 @@ class AgentLoop:
         if self._task is None:
             self._running = True
             self._task = asyncio.create_task(self.run(), name="agent-loop")
+            # catch-up indexing runs beside the answering loop, never on
+            # it — a turn never waits on history draining
+            if self._vectors is not None and self._vectors.enabled:
+                self._backfill_task = asyncio.create_task(
+                    self._backfill_loop(), name="vector-backfill"
+                )
 
     async def stop(self) -> None:
         self._running = False
         task, self._task = self._task, None
+        backfill, self._backfill_task = self._backfill_task, None
         self._woken.set()
+        if backfill is not None:
+            backfill.cancel()
+            with contextlib.suppress(TimeoutError, asyncio.CancelledError):
+                await asyncio.wait_for(backfill, timeout=10)
         if task is not None:
             with contextlib.suppress(TimeoutError, asyncio.CancelledError):
                 await asyncio.wait_for(task, timeout=10)
+
+    async def _backfill_loop(self) -> None:
+        """Index the events that predate vector memory (or lost a race with
+        a rate limit), 50 oldest at a time: tight passes while history is
+        draining, a minute's rest once caught up. A failed pass just
+        retries — indexed_at is the ledger, so nothing is ever lost."""
+        assert self._vectors is not None
+        while self._running:
+            try:
+                handled = await self._vectors.backfill(50)
+            except Exception:
+                log.exception("vector backfill pass failed — pausing before the retry")
+                handled = None
+            await asyncio.sleep(1 if handled else 60)
 
     def notify(self) -> None:
         """Wake the loop early — used after screen captures, poll results,
@@ -508,15 +536,6 @@ class AgentLoop:
 
     async def _tick(self) -> None:
         anchor = self._last_event_id
-
-        # (a0) events that predate vector memory (or lost a race with a
-        # rate limit) get indexed a batch per tick — self-throttling, and
-        # a failure here costs this tick nothing
-        if self._vectors is not None:
-            try:
-                await self._vectors.backfill(50)
-            except Exception:
-                log.exception("vector backfill failed — continuing")
 
         # (a) due source polls first, so their results are observed this tick
         await self._run_due_polls()
@@ -1273,6 +1292,23 @@ class AgentLoop:
                 )
             return
 
+        # the recall query depends only on the message texts, so its
+        # embedding starts now and the round trip overlaps the context
+        # assembly below — one API wait hidden instead of added
+        recall_embed: asyncio.Task[list[float] | None] | None = None
+        if messages and self._vectors is not None and self._vectors.enabled:
+            try:
+                recall_query = " ".join(
+                    [m.text for m in messages]
+                    + [m.reply_to_text for m in messages if m.reply_to_text]
+                ).strip()
+                if recall_query:
+                    recall_embed = asyncio.create_task(self._vectors.embed_query(recall_query))
+            except Exception:
+                # a layer this broken recalls inline or not at all — either
+                # way the turn itself must survive
+                log.exception("recall head start failed — embedding inline instead")
+
         ctx = await self._context.build()
         history: list[Message] = []
         # every meaningful question pulls its own related memories in —
@@ -1281,7 +1317,9 @@ class AgentLoop:
         recalled: list[dict[str, Any]] = []
         recall_lines: list[str] = []
         if messages:
-            recalled, recall_lines = await self._recall_related(messages, ctx, observations)
+            recalled, recall_lines = await self._recall_related(
+                messages, ctx, observations, recall_embed
+            )
         context_block = self._format_context(ctx)
         head = "\n\n".join(part for part in (context_block, "\n".join(recall_lines)) if part)
         if head:
@@ -1421,10 +1459,7 @@ class AgentLoop:
                 # swallows per-surface failures so this can't double-fault.
                 # Unprompted ticks stay quiet: a background hiccup is a log
                 # line, never an interruption.
-                await self._surfaces.send_to_user(
-                    "Something went wrong on my side — I couldn't finish "
-                    "that just now. Nothing else is affected."
-                )
+                await self._surfaces.send_to_user(FAILURE_REPLY)
             raise
         finally:
             # persist even when the turn died mid-flight: the calls that did
@@ -1453,16 +1488,24 @@ class AgentLoop:
         return ", ".join(servers) if servers else "none"
 
     async def _recall_related(
-        self, messages: list[InboundMessage], ctx: Any, observations: list[Event]
+        self,
+        messages: list[InboundMessage],
+        ctx: Any,
+        observations: list[Event],
+        query_embed: asyncio.Task[list[float] | None] | None = None,
     ) -> tuple[list[dict[str, Any]], list[str]]:
         """The memories a solicited turn pulls in automatically: chunks of
         older conversations and shared documents that relate to what was
-        just asked — semantic when vector memory is wired, the keyword-fuzzy
-        scan when it isn't. Excludes what the turn already sees (working
-        context events, this tick's chat observations), but a document
-        shared this same tick stays retrievable — that is what makes
-        "what's in slide 3" answerable in one turn. Failure costs the turn
-        nothing: an empty recall."""
+        just asked — semantic, so a missing or failing embedding layer
+        simply recalls nothing. `query_embed` is the head start _turn gave
+        the query embedding so its round trip overlaps the context build;
+        without one it is embedded here. Excludes what the turn already
+        sees (working context events, this tick's chat observations), but a
+        document shared this same tick stays retrievable — that is what
+        makes "what's in slide 3" answerable in one turn. Failure costs
+        the turn nothing: an empty recall."""
+        if self._vectors is None or not self._vectors.enabled:
+            return [], []
         query = " ".join(
             [m.text for m in messages] + [m.reply_to_text for m in messages if m.reply_to_text]
         ).strip()
@@ -1471,35 +1514,29 @@ class AgentLoop:
         excluded = {e.id for e in ctx.events}
         excluded |= {e.id for e in observations if e.kind == "chat_message"}
         try:
-            if self._vectors is not None and self._vectors.enabled:
-                hits = await self._vectors.search(query, limit=12)
-                # a document the user just named goes to the front, ahead
-                # of the similarity ranking alone — "explain deadlock
-                # prevention from OSY.pdf" must land in OSY.pdf
-                lowered = query.lower()
-                hits.sort(
-                    key=lambda h: (
-                        0 if h.filename and Path(h.filename).stem.lower() in lowered else 1,
-                        -h.score,
-                    )
+            q = (
+                await query_embed
+                if query_embed is not None
+                else await self._vectors.embed_query(query)
+            )
+            if q is None:
+                return [], []
+            hits = await self._vectors.search_vector(q, limit=12)
+            # a document the user just named goes to the front, ahead
+            # of the similarity ranking alone — "explain deadlock
+            # prevention from OSY.pdf" must land in OSY.pdf
+            lowered = query.lower()
+            hits.sort(
+                key=lambda h: (
+                    0 if h.filename and Path(h.filename).stem.lower() in lowered else 1,
+                    -h.score,
                 )
-                candidates: list[tuple[int, str, str, str, str]] = []
-                for hit in hits:
-                    candidates.append(
-                        (hit.event_id, hit.source, hit.kind, await self._hit_header(hit), hit.text)
-                    )
-                return self._render_recall(candidates, excluded)
-            found = await self._events.search(query, limit=6)
-            candidates = [
-                (
-                    e.id,
-                    e.source,
-                    e.kind,
-                    self._event_header(e),
-                    self._event_memory_text(e),
+            )
+            candidates: list[tuple[int, str, str, str, str]] = []
+            for hit in hits:
+                candidates.append(
+                    (hit.event_id, hit.source, hit.kind, await self._hit_header(hit), hit.text)
                 )
-                for e in found
-            ]
             return self._render_recall(candidates, excluded)
         except Exception:
             log.exception("memory recall failed — continuing without it")
@@ -1525,24 +1562,6 @@ class AgentLoop:
             if handle:
                 return f"@{handle} on {hit.source}, {when}"
         return f"{hit.source}, {when}"
-
-    def _event_header(self, event: Event) -> str:
-        when = f"{event.occurred_at:%Y-%m-%d}"
-        payload = event.payload if isinstance(event.payload, dict) else {}
-        if event.kind == "shared_doc":
-            return str(payload.get("filename") or event.source)
-        if event.kind == "chat_message":
-            sender = payload.get("_sender")
-            if isinstance(sender, dict) and sender.get("handle"):
-                return f"@{sender['handle']} on {event.source}, {when}"
-        return f"{event.source}, {when}"
-
-    @staticmethod
-    def _event_memory_text(event: Event) -> str:
-        payload = event.payload if isinstance(event.payload, dict) else {}
-        if event.kind == "chat_message":
-            return str(payload.get("text") or "")
-        return str(payload.get("text") or payload.get("description") or "")
 
     @staticmethod
     def _render_recall(

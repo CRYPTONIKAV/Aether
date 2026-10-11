@@ -9,6 +9,7 @@ become observations; configured source polls run on schedule.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -795,7 +796,10 @@ async def test_a_broken_vector_layer_costs_the_turn_nothing() -> None:
     class ExplodingVectors:
         enabled = True
 
-        async def search(self, query, limit=8, min_similarity=0.35):
+        async def embed_query(self, query):
+            raise RuntimeError("embedding api down")
+
+        async def search_vector(self, q, limit=8, min_similarity=0.35):
             raise RuntimeError("embedding api down")
 
     provider = FakeProvider([Turn(text="still here")])
@@ -803,6 +807,26 @@ async def test_a_broken_vector_layer_costs_the_turn_nothing() -> None:
     kit.loop.submit_message(_msg("what do you remember?"))
     await kit.loop._tick()
     assert kit.connector.sent == ["still here"]  # the turn survived
+
+
+async def test_backfill_runs_beside_the_loop_never_on_a_tick() -> None:
+    provider = FakeProvider([Turn(text="hi")])
+    vectors = FakeVectorMemory()
+    kit = LoopKit(provider, vectors=vectors)
+    kit.loop.submit_message(_msg("hello"))
+    await kit.loop._tick()
+    # the answering tick never waits on catch-up indexing
+    assert vectors.backfills == 0
+
+    # the background loop drains on its own schedule instead
+    kit.loop._running = True
+    task = asyncio.create_task(kit.loop._backfill_loop())
+    await asyncio.sleep(0.05)
+    assert vectors.backfills >= 1
+    kit.loop._running = False
+    task.cancel()  # it is resting between passes — cancel, don't wait
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
 
 
 async def test_recall_excludes_what_the_turn_already_sees() -> None:
