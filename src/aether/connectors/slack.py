@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 
 from ..authz.approvals import APPROVED, DENIED
-from .attachments import MAX_ATTACHMENT_BYTES
+from .attachments import MAX_ATTACHMENT_BYTES, reported_size_exceeds_cap
 from .base import (
     ApprovalDecider,
     Attachment,
@@ -191,21 +191,40 @@ class SlackConnector(MessagingConnector):
         out: dict[str, bytes] = {}
         for f in files:
             url = f.get("url_private_download") or ""
+            name = f.get("name")
             if not url:
                 continue
+            if reported_size_exceeds_cap(f.get("size"), MAX_ATTACHMENT_BYTES):
+                log.warning("slack file %s is over the size cap — skipped", name)
+                continue
             try:
-                if (f.get("size") or 0) > MAX_ATTACHMENT_BYTES:
-                    log.warning("slack file %s is over the size cap — skipped", f.get("name"))
-                    continue
-                async with httpx.AsyncClient() as client:
-                    response = await client.get(
-                        url, headers={"Authorization": f"Bearer {self._bot_token}"}
-                    )
-                response.raise_for_status()
-                out[str(f.get("id"))] = response.content
+                data = await self._stream_download(url, name)
             except Exception:
-                log.warning("slack file download failed — continuing", exc_info=True)
+                log.warning("slack file %s download failed — continuing", name, exc_info=True)
+                continue
+            if data is not None:
+                out[str(f.get("id"))] = data
         return out
+
+    async def _stream_download(self, url: str, name: str) -> bytes | None:
+        """Downloaded in chunks, stopping the instant the running total
+        passes the cap — a reported size (missing, zero, or just wrong)
+        never gets the last word on how much we actually pull into memory."""
+        chunks = bytearray()
+        headers = {"Authorization": f"Bearer {self._bot_token}"}
+        async with (
+            httpx.AsyncClient() as client,
+            client.stream("GET", url, headers=headers) as response,
+        ):
+            response.raise_for_status()
+            async for chunk in response.aiter_bytes():
+                chunks += chunk
+                if len(chunks) > MAX_ATTACHMENT_BYTES:
+                    log.warning(
+                        "slack file %s exceeded the size cap mid-download — discarded", name
+                    )
+                    return None
+        return bytes(chunks)
 
     # -- buttons -----------------------------------------------------------------
 
@@ -224,21 +243,26 @@ class SlackConnector(MessagingConnector):
         except (KeyError, IndexError, TypeError, ValueError):
             log.warning("odd slack action payload: %r", body)
             return
-        await self._decide(approval_id, decision)
+        note = await self._decide_and_explain(approval_id, decision)
         with contextlib.suppress(
             Exception
         ):  # message may be old or locked — the store has the truth
-            # the tap only retires the buttons — the question text stays,
-            # and the outcome message from _carry_out is the acknowledgment
-            # (a stale tap's outcome already landed when it was decided)
+            # a fresh decision needs no extra note — the outcome message
+            # from _carry_out is the acknowledgment; a stale or double tap
+            # gets a small note instead of landing with no feedback at all
             message = body.get("message", {})
+            blocks = [
+                block for block in message.get("blocks", []) if block.get("type") != "actions"
+            ]
+            if note:
+                blocks.append(
+                    {"type": "context", "elements": [{"type": "mrkdwn", "text": f"_{note}_"}]}
+                )
             await client.chat_update(
                 channel=body["channel"]["id"],
                 ts=message["ts"],
                 text=message.get("text", ""),
-                blocks=[
-                    block for block in message.get("blocks", []) if block.get("type") != "actions"
-                ],
+                blocks=blocks,
             )
 
     # -- outbound ------------------------------------------------------------------

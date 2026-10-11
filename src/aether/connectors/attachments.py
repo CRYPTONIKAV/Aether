@@ -35,6 +35,23 @@ MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 # once and clipped per turn, so this costs tokens exactly once per document
 DOC_TEXT_CAP = 20_000
 
+
+def reported_size_exceeds_cap(size: int | None, cap: int) -> bool:
+    """True only when the platform told us, unambiguously, that the file is
+    too big. A missing, zero, or negative size is never treated as proof of
+    safety — some bot APIs (Telegram's documented Optional file_size among
+    them) omit it, and a connector must not read "absent" as "small". Every
+    connector still checks the actual downloaded bytes against the same cap
+    once the file is in hand, regardless of what this says."""
+    return isinstance(size, int) and size > cap
+
+
+def actual_size_exceeds_cap(data: bytes, cap: int) -> bool:
+    """The one check that can't be lied to by platform metadata — run after
+    every download, whatever the reported size claimed."""
+    return len(data) > cap
+
+
 IMAGE_SYSTEM_PROMPT = (
     "You look at one image the user shared in chat — a photo, screenshot, or "
     "picture — and report what is in it. Perception only — never propose or "
@@ -182,6 +199,19 @@ def _image_media_type(attachment: Attachment) -> str:
 # extraction never raises.
 
 
+class _DependencyMissing(RuntimeError):
+    """A required parsing dependency isn't installed in this environment —
+    distinguishes a broken/unsynced deployment from a genuinely unreadable
+    file, which get very different log treatment below."""
+
+
+class _ZipBombSuspected(RuntimeError):
+    """A zip-based document (docx/xlsx/pptx) decompressed past one of the
+    hard ceilings below, or declared more entries/entity definitions than a
+    real office file ever needs. Treated like any other unreadable file —
+    logged and degraded to "", never allowed to run away with memory/CPU."""
+
+
 def extract_doc_text(filename: str, media_type: str, data: bytes) -> str:
     try:
         ext = Path(filename or "").suffix.lower().lstrip(".")
@@ -196,21 +226,99 @@ def extract_doc_text(filename: str, media_type: str, data: bytes) -> str:
         if ext in ("txt", "csv", "md") or (media_type or "").startswith("text/"):
             return data.decode("utf-8", errors="replace")
         return ""
+    except _ZipBombSuspected as exc:
+        log.warning("text extraction for %s refused — %s", filename, exc)
+        return ""
+    except _DependencyMissing as exc:
+        # loud and actionable: this is an out-of-sync environment, not a bad
+        # file — every PDF would otherwise silently "extract" to nothing
+        # with no clue why, indistinguishable from a corrupt upload
+        log.error(
+            "text extraction for %s needs a dependency that isn't installed "
+            "(%s) — the environment is out of sync with pyproject.toml",
+            filename,
+            exc,
+        )
+        return ""
     except Exception:
         log.warning("text extraction failed for %s — continuing", filename, exc_info=True)
         return ""
 
 
 def _pdf_text(data: bytes) -> str:
-    from pypdf import PdfReader
+    try:
+        from pypdf import PdfReader
+    except ModuleNotFoundError as exc:
+        raise _DependencyMissing(f"pypdf is not installed ({exc}); run: pip install pypdf") from exc
 
     reader = PdfReader(io.BytesIO(data))
     return "\n".join(page.extract_text() or "" for page in reader.pages)
 
 
+# Hard ceilings for zip-based office documents. A decompression bomb hides a
+# huge payload behind a tiny compressed size — the zip's own central
+# directory is attacker-controlled and never trusted as the sole guard, so
+# every member is read in chunks with a running check against these caps
+# rather than pulled fully into memory first and measured afterward.
+MAX_ZIP_ENTRIES = 2_000
+MAX_ZIP_ENTRY_BYTES = 10 * 1024 * 1024  # one decompressed member
+MAX_ZIP_TOTAL_BYTES = 30 * 1024 * 1024  # every member read for one document
+_ZIP_READ_CHUNK = 64 * 1024
+
+
+def _open_bounded_zip(data: bytes) -> zipfile.ZipFile:
+    zf = zipfile.ZipFile(io.BytesIO(data))
+    if len(zf.infolist()) > MAX_ZIP_ENTRIES:
+        raise _ZipBombSuspected(f"{len(zf.infolist())} archive entries exceeds the cap")
+    return zf
+
+
+def _read_bounded(zf: zipfile.ZipFile, name: str, total_read: list[int]) -> bytes:
+    """One member's bytes, decompressed in chunks so an oversized member is
+    caught well before a single `.read()` call would buffer the whole
+    thing. `total_read` is a one-item list shared across every member read
+    for the same document, so the combined decompressed size of a
+    many-small-members bomb is capped too, not just any single member."""
+    info = zf.getinfo(name)
+    # the declared size is a hint, not a guarantee (it can under-report
+    # what actually decompresses) — it only lets an honest giant fail fast
+    if info.file_size > MAX_ZIP_ENTRY_BYTES:
+        raise _ZipBombSuspected(f"{name} declares {info.file_size} bytes, over the per-entry cap")
+    out = bytearray()
+    with zf.open(name) as member:
+        while chunk := member.read(_ZIP_READ_CHUNK):
+            out += chunk
+            total_read[0] += len(chunk)
+            if len(out) > MAX_ZIP_ENTRY_BYTES:
+                raise _ZipBombSuspected(f"{name} decompressed past the per-entry cap")
+            if total_read[0] > MAX_ZIP_TOTAL_BYTES:
+                raise _ZipBombSuspected("document decompressed past the total cap")
+    return bytes(out)
+
+
+def _reject_doctype(xml: bytes) -> None:
+    """Office XML parts never legitimately declare a DOCTYPE or custom
+    entities — stdlib expat expands entities by default, which turns a few
+    bytes of declarations into an unbounded parse (the "billion laughs"
+    shape). A DOCTYPE must precede the root element in well-formed XML, so
+    a check of the first few KB is enough to catch one; this is used
+    instead of reaching into ElementTree's internals, which no longer
+    expose expat's own handlers in current Python (the C accelerator
+    doesn't carry them)."""
+    if b"<!DOCTYPE" in xml[:4096] or b"<!ENTITY" in xml[:4096]:
+        raise _ZipBombSuspected("XML DOCTYPE/entity declarations are not allowed")
+
+
+def _parse_xml(xml: bytes) -> ElementTree.Element:
+    if len(xml) > MAX_ZIP_ENTRY_BYTES:  # belt-and-braces; callers already cap this
+        raise _ZipBombSuspected("XML member too large to parse")
+    _reject_doctype(xml)
+    return ElementTree.fromstring(xml)
+
+
 def _zip_text(data: bytes, member: str, to_text) -> str:
-    with zipfile.ZipFile(io.BytesIO(data)) as zf, zf.open(member) as f:
-        return to_text(f.read())
+    with _open_bounded_zip(data) as zf:
+        return to_text(_read_bounded(zf, member, [0]))
 
 
 _WORD_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -219,7 +327,7 @@ _SHEET_NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 
 
 def _docx_text(xml: bytes) -> str:
-    root = ElementTree.fromstring(xml)
+    root = _parse_xml(xml)
     lines = []
     for para in root.iter(f"{_WORD_NS}p"):
         line = "".join(t.text or "" for t in para.iter(f"{_WORD_NS}t")).strip()
@@ -231,17 +339,18 @@ def _docx_text(xml: bytes) -> str:
 def _xlsx_text(data: bytes) -> str:
     """Shared strings plus the literal cell values — a memory aid for
     "what did that sheet say", not a spreadsheet engine."""
-    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+    with _open_bounded_zip(data) as zf:
+        total_read = [0]
         parts: list[str] = []
         if "xl/sharedStrings.xml" in zf.namelist():
-            root = ElementTree.fromstring(zf.read("xl/sharedStrings.xml"))
+            root = _parse_xml(_read_bounded(zf, "xl/sharedStrings.xml", total_read))
             for si in root.iter(f"{_SHEET_NS}si"):
                 text = "".join(t.text or "" for t in si.iter(f"{_SHEET_NS}t")).strip()
                 if text:
                     parts.append(text)
         for name in sorted(zf.namelist()):
             if name.startswith("xl/worksheets/") and name.endswith(".xml"):
-                root = ElementTree.fromstring(zf.read(name))
+                root = _parse_xml(_read_bounded(zf, name, total_read))
                 for value in root.iter(f"{_SHEET_NS}v"):
                     if value.text and value.text.strip():
                         parts.append(value.text.strip())
@@ -249,7 +358,8 @@ def _xlsx_text(data: bytes) -> str:
 
 
 def _pptx_text(data: bytes) -> str:
-    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+    with _open_bounded_zip(data) as zf:
+        total_read = [0]
         slides = sorted(
             name
             for name in zf.namelist()
@@ -257,7 +367,7 @@ def _pptx_text(data: bytes) -> str:
         )
         lines = []
         for name in slides:
-            root = ElementTree.fromstring(zf.read(name))
+            root = _parse_xml(_read_bounded(zf, name, total_read))
             text = " ".join((t.text or "").strip() for t in root.iter(f"{_DRAWING_NS}t")).strip()
             if text:
                 lines.append(text)

@@ -163,6 +163,33 @@ class FakeApprovals:
             return None
         if isinstance(self.result, Approval):
             return self.result  # the caller scripted the decided row
+        # realistic default: a row created via create() is only decided when
+        # it's genuinely still pending and unexpired — mirrors the real
+        # store's WHERE clause closely enough that get() reflects the
+        # outcome afterward (tests exercising stale/expired feedback rely
+        # on this), and the row is mutated in place like the real UPDATE
+        for i, approval in enumerate(self.created):
+            if approval.id != approval_id:
+                continue
+            if approval.status != PENDING or approval.expires_at <= datetime.now(UTC):
+                return None
+            updated = Approval(
+                id=approval.id,
+                tool_name=approval.tool_name,
+                params=approval.params,
+                status=decision,
+                created_at=approval.created_at,
+                expires_at=approval.expires_at,
+                decided_at=datetime.now(UTC),
+                decided_by=decided_by,
+                rules_matched=approval.rules_matched,
+                note=approval.note,
+            )
+            self.created[i] = updated
+            return updated
+        # no matching created row — the id was scripted directly, not via
+        # create(); keep the old synthetic-approval behavior so those tests
+        # (which never call create()) are unaffected
         return Approval(
             id=approval_id,
             tool_name=f"tool-{approval_id}",

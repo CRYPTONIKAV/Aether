@@ -9,10 +9,12 @@ the MessagingConnector base class.
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from typing import Any
 
 import discord
+import httpx
 import pytest
 from fakes import FakeApprovals
 from telegram import Chat, Message, Update
@@ -297,36 +299,88 @@ async def test_telegram_button_press_decides_and_retires_the_buttons() -> None:
     connector, app = await _started_telegram(approvals=approvals, decisions=on_decision)
     button_handler = app.handlers[1].callback
 
-    answered: list[bool] = []
+    answered: list[str | None] = []
     cleared: list[bool] = []
 
-    async def answer() -> None:
-        answered.append(True)
+    async def answer(text: str | None = None) -> None:
+        answered.append(text)
 
     async def edit_message_reply_markup(reply_markup=None) -> None:
         cleared.append(reply_markup is None)
 
+    parked = await approvals.create(tool_name="mail__send_message", params={"to": "a@b.c"})
     update = SimpleNamespace(
         callback_query=SimpleNamespace(
-            data="aether:approve:9",
+            data=f"aether:approve:{parked.id}",
             answer=answer,
             edit_message_reply_markup=edit_message_reply_markup,
         )
     )
     await button_handler(update, None)
-    assert approvals.calls == [(9, APPROVED)]
-    assert decisions == [(9, APPROVED)]
-    assert answered == [True]
-    # the tap retires the buttons — the outcome message is the
-    # acknowledgment, never an "Approval approved: handled." edit
+    assert approvals.calls == [(parked.id, APPROVED)]
+    assert decisions == [(parked.id, APPROVED)]
+    # a fresh decision needs no toast — the outcome message from _carry_out
+    # is the acknowledgment, never an "Approval approved: handled." edit
+    assert answered == [None]
     assert cleared == [True]
 
-    # a double press: decide returns None, executor not re-fired, buttons
-    # still cleared (the first decision's outcome already landed)
-    approvals.result = None
+    # a double press: decide returns None because the row is no longer
+    # pending — the executor is not re-fired, the buttons still clear, and
+    # this time a toast tells the user the tap didn't do anything new
     await button_handler(update, None)
-    assert decisions == [(9, APPROVED)]
+    assert decisions == [(parked.id, APPROVED)]
     assert cleared == [True, True]
+    assert answered[-1] == "that request was already decided."
+
+
+async def test_telegram_button_press_on_an_expired_approval_says_so() -> None:
+    approvals = FakeApprovals()
+    connector, app = await _started_telegram(approvals=approvals)
+    button_handler = app.handlers[1].callback
+
+    answered: list[str | None] = []
+
+    async def answer(text: str | None = None) -> None:
+        answered.append(text)
+
+    async def edit_message_reply_markup(reply_markup=None) -> None:
+        pass
+
+    parked = await approvals.create(tool_name="mail__send_message", params={"to": "a@b.c"})
+    parked.expires_at = datetime.now(UTC) - timedelta(seconds=1)  # the TTL already passed
+    update = SimpleNamespace(
+        callback_query=SimpleNamespace(
+            data=f"aether:approve:{parked.id}",
+            answer=answer,
+            edit_message_reply_markup=edit_message_reply_markup,
+        )
+    )
+    await button_handler(update, None)
+    assert answered == ["that approval has expired."]
+
+
+async def test_telegram_button_press_on_an_unknown_approval_says_so() -> None:
+    answered: list[str | None] = []
+
+    async def answer(text: str | None = None) -> None:
+        answered.append(text)
+
+    async def edit_message_reply_markup(reply_markup=None) -> None:
+        pass
+
+    approvals = FakeApprovals()
+    approvals.result = None  # the store found no such row at all
+    connector, app = await _started_telegram(approvals=approvals)
+    button_handler = app.handlers[1].callback
+    update = SimpleNamespace(
+        callback_query=SimpleNamespace(
+            data="aether:approve:999",
+            answer=answer,
+            edit_message_reply_markup=edit_message_reply_markup,
+        )
+    )
+    await button_handler(update, None)
+    assert answered == ["that request could not be found."]
 
 
 async def test_telegram_send_retries_through_network_blips() -> None:
@@ -499,6 +553,37 @@ async def test_discord_approval_view_buttons_decide() -> None:
     # the question text stays (no content override) — the tap only retires
     # the buttons; the outcome message is the acknowledgment
     assert edits == [{"content": None, "view": view}]
+
+
+async def test_discord_approval_view_gives_feedback_on_a_stale_or_expired_tap() -> None:
+    approvals = FakeApprovals()
+    connector, _ = await _started_discord(approvals=approvals)
+    await connector.on_message(_dc_message("hi"))
+
+    parked = await approvals.create(tool_name="mail__send_message", params={"to": "a@b.c"})
+    await connector.present_approval(parked.id, "send it?")
+    view = connector._channel.sent[-1]["view"]
+
+    edits: list[dict] = []
+
+    async def edit_message(content=None, view=None) -> None:
+        edits.append({"content": content, "view": view})
+
+    interaction = SimpleNamespace(response=SimpleNamespace(edit_message=edit_message))
+    await view._finish(interaction, APPROVED)
+    assert edits[-1]["content"] is None  # fresh decision — no extra note
+
+    # a double tap on the same (now-decided) approval gets a note, not silence
+    await view._finish(interaction, APPROVED)
+    assert edits[-1]["content"] == "that request was already decided."
+
+    # a fresh approval whose TTL already passed reads as expired, not "decided"
+    expired = await approvals.create(tool_name="mail__send_message", params={"to": "b@c.d"})
+    expired.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    await connector.present_approval(expired.id, "send it?")
+    expired_view = connector._channel.sent[-1]["view"]
+    await expired_view._finish(interaction, APPROVED)
+    assert edits[-1]["content"] == "that approval has expired."
 
 
 async def test_discord_disabled_never_builds_a_bot() -> None:
@@ -691,6 +776,48 @@ async def test_slack_button_flow_decides_and_updates_the_message() -> None:
     assert approvals.calls == [(12, DENIED)]
 
 
+async def test_slack_button_flow_gives_feedback_on_a_stale_or_expired_tap() -> None:
+    approvals = FakeApprovals()
+    connector, app, _ = await _started_slack(approvals=approvals)
+
+    async def ack() -> None:
+        pass
+
+    def _body(approval_id: int) -> dict:
+        return {
+            "actions": [{"value": str(approval_id)}],
+            "channel": {"id": "D1"},
+            "message": {
+                "ts": "123.456",
+                "text": "dm the team?",
+                "blocks": [
+                    {"type": "section", "text": {"type": "mrkdwn", "text": "dm the team?"}},
+                    {"type": "actions", "block_id": f"aether:{approval_id}"},
+                ],
+            },
+        }
+
+    parked = await approvals.create(tool_name="mail__send_message", params={"to": "a@b.c"})
+    await app.listeners[APPROVE_ACTION](ack, _body(parked.id), app.client)
+    fresh = app.client.updated[-1]
+    assert [b["type"] for b in fresh["blocks"]] == ["section"]  # no note on a fresh decision
+
+    # a double tap on the same (now-decided) approval adds a small note
+    await app.listeners[APPROVE_ACTION](ack, _body(parked.id), app.client)
+    stale = app.client.updated[-1]
+    assert stale["blocks"][-1] == {
+        "type": "context",
+        "elements": [{"type": "mrkdwn", "text": "_that request was already decided._"}],
+    }
+
+    # a fresh approval whose TTL already passed reads as expired
+    expired = await approvals.create(tool_name="mail__send_message", params={"to": "b@c.d"})
+    expired.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    await app.listeners[APPROVE_ACTION](ack, _body(expired.id), app.client)
+    expired_update = app.client.updated[-1]
+    assert expired_update["blocks"][-1]["elements"][0]["text"] == "_that approval has expired._"
+
+
 async def test_slack_without_both_tokens_stays_down() -> None:
     connector = SlackConnector(
         bot_token="xoxb", app_token="", app_factory=None, socket_factory=None
@@ -824,6 +951,40 @@ async def test_telegram_oversize_and_failed_downloads_skip_not_die() -> None:
     assert len(received) == 3
 
 
+async def test_telegram_missing_or_lying_size_metadata_does_not_bypass_the_cap(monkeypatch) -> None:
+    """Telegram's file_size is documented Optional — a missing, zero, or
+    undercounted report must never be read as proof the file is safe. The
+    actual downloaded bytes are what gets checked."""
+    monkeypatch.setattr("aether.connectors.telegram.MAX_ATTACHMENT_BYTES", 10)
+    received: list[InboundMessage] = []
+
+    async def inbound(message: InboundMessage) -> None:
+        received.append(message)
+
+    connector, app = await _started_telegram(inbound=inbound)
+    oversized = b"x" * 11
+
+    for size in (None, 0, 5):  # missing, zero, and an undercounted report
+        await app.handlers[0].callback(_tg_file_update(oversized, caption="x", size=size), None)
+        assert received[-1].attachments == (), f"size={size} must not bypass the cap"
+
+
+async def test_telegram_download_cap_is_exact_at_the_boundary(monkeypatch) -> None:
+    monkeypatch.setattr("aether.connectors.telegram.MAX_ATTACHMENT_BYTES", 10)
+    received: list[InboundMessage] = []
+
+    async def inbound(message: InboundMessage) -> None:
+        received.append(message)
+
+    connector, app = await _started_telegram(inbound=inbound)
+
+    await app.handlers[0].callback(_tg_file_update(b"x" * 10, caption="at cap", size=10), None)
+    assert len(received[-1].attachments) == 1
+
+    await app.handlers[0].callback(_tg_file_update(b"x" * 11, caption="over cap", size=11), None)
+    assert received[-1].attachments == ()
+
+
 class FakeDiscordAttachment:
     def __init__(self, filename: str, content_type: str, size: int, payload) -> None:
         self.filename = filename
@@ -886,6 +1047,43 @@ async def test_discord_attachment_woes_skip_not_die() -> None:
     assert received[-1].attachments == (Attachment("image", "photo.jpg", "", b"jpg"),)
 
 
+async def test_discord_missing_or_lying_size_metadata_does_not_bypass_the_cap(monkeypatch) -> None:
+    """Discord's API normally requires `size`, but nothing stops a test
+    double — or a future API quirk — from omitting or undercounting it; the
+    actual downloaded bytes are what gets checked regardless."""
+    monkeypatch.setattr("aether.connectors.discord.MAX_ATTACHMENT_BYTES", 10)
+    received: list[InboundMessage] = []
+
+    async def inbound(message: InboundMessage) -> None:
+        received.append(message)
+
+    connector, _ = await _started_discord(inbound=inbound)
+    oversized = b"x" * 11
+
+    for size in (None, 0, 5):  # missing, zero, and an undercounted report
+        att = FakeDiscordAttachment("big.bin", "application/octet-stream", size, oversized)
+        await connector.on_message(_dc_file_message([att], content="x"))
+        assert received[-1].attachments == (), f"size={size} must not bypass the cap"
+
+
+async def test_discord_download_cap_is_exact_at_the_boundary(monkeypatch) -> None:
+    monkeypatch.setattr("aether.connectors.discord.MAX_ATTACHMENT_BYTES", 10)
+    received: list[InboundMessage] = []
+
+    async def inbound(message: InboundMessage) -> None:
+        received.append(message)
+
+    connector, _ = await _started_discord(inbound=inbound)
+
+    at_cap = FakeDiscordAttachment("f", "application/octet-stream", 10, b"x" * 10)
+    await connector.on_message(_dc_file_message([at_cap], content="x"))
+    assert len(received[-1].attachments) == 1
+
+    over_cap = FakeDiscordAttachment("f", "application/octet-stream", 11, b"x" * 11)
+    await connector.on_message(_dc_file_message([over_cap], content="x"))
+    assert received[-1].attachments == ()
+
+
 def _slack_file_event() -> dict:
     return {
         "channel_type": "im",
@@ -939,3 +1137,68 @@ async def test_slack_the_connector_downloads_and_emits() -> None:
             attachments=(Attachment("doc", "notes.md", "text/markdown", b"hello"),),
         )
     ]
+
+
+def _patch_slack_http(monkeypatch, payload: bytes, *, fail: bool = False) -> None:
+    """Routes slack.py's real httpx.AsyncClient through a MockTransport, so
+    _download_files' actual streaming code runs end to end against a
+    canned response instead of the network."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if fail:
+            raise httpx.ConnectError("boom", request=request)
+        return httpx.Response(200, content=payload)
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def client_factory(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("aether.connectors.slack.httpx.AsyncClient", client_factory)
+
+
+async def test_slack_missing_or_lying_size_metadata_does_not_bypass_the_cap(monkeypatch) -> None:
+    """A Slack file (e.g. an externally-shared one) can report size as 0 or
+    omit it — the actual streamed bytes are what gets checked."""
+    monkeypatch.setattr("aether.connectors.slack.MAX_ATTACHMENT_BYTES", 10)
+    connector, _, _ = await _started_slack()
+    oversized = b"x" * 11
+
+    for size in (None, 0, 5):  # missing, zero, and an undercounted report
+        _patch_slack_http(monkeypatch, oversized)
+        out = await connector._download_files(
+            [{"id": "F1", "name": "big.bin", "url_private_download": "https://x/f", "size": size}]
+        )
+        assert out == {}, f"size={size} must not bypass the cap"
+
+
+async def test_slack_download_cap_is_exact_at_the_boundary(monkeypatch) -> None:
+    monkeypatch.setattr("aether.connectors.slack.MAX_ATTACHMENT_BYTES", 10)
+    connector, _, _ = await _started_slack()
+
+    _patch_slack_http(monkeypatch, b"x" * 10)
+    at_cap = await connector._download_files(
+        [{"id": "F1", "name": "f", "url_private_download": "https://x/f", "size": 10}]
+    )
+    assert at_cap == {"F1": b"x" * 10}
+
+    _patch_slack_http(monkeypatch, b"x" * 11)
+    over_cap = await connector._download_files(
+        [{"id": "F1", "name": "f", "url_private_download": "https://x/f", "size": 11}]
+    )
+    assert over_cap == {}
+
+
+async def test_slack_an_interrupted_download_is_skipped_and_nothing_partial_kept(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("aether.connectors.slack.MAX_ATTACHMENT_BYTES", 10)
+    connector, _, _ = await _started_slack()
+    _patch_slack_http(monkeypatch, b"irrelevant", fail=True)
+
+    out = await connector._download_files(
+        [{"id": "F1", "name": "f", "url_private_download": "https://x/f", "size": 5}]
+    )
+    assert out == {}

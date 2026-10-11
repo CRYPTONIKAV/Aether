@@ -16,7 +16,7 @@ from telegram.error import NetworkError
 from telegram.ext import Application, CallbackQueryHandler, MessageHandler, filters
 
 from ..authz.approvals import APPROVED, DENIED
-from .attachments import MAX_ATTACHMENT_BYTES
+from .attachments import MAX_ATTACHMENT_BYTES, actual_size_exceeds_cap, reported_size_exceeds_cap
 from .base import (
     ApprovalDecider,
     Attachment,
@@ -150,36 +150,57 @@ class TelegramConnector(MessagingConnector):
         return out
 
     async def _download(self, telegram_file: Any, filename: str) -> bytes | None:
+        if reported_size_exceeds_cap(
+            getattr(telegram_file, "file_size", None), MAX_ATTACHMENT_BYTES
+        ):
+            log.warning("telegram file %s is over the size cap — skipped", filename)
+            return None
         try:
-            if (getattr(telegram_file, "file_size", 0) or 0) > MAX_ATTACHMENT_BYTES:
+            file = await telegram_file.get_file()
+            # getFile's own file_size is Telegram's more authoritative word
+            # on the file now that a file_path exists — still just a hint
+            # (also Optional per the Bot API), never trusted on its own
+            if reported_size_exceeds_cap(getattr(file, "file_size", None), MAX_ATTACHMENT_BYTES):
                 log.warning("telegram file %s is over the size cap — skipped", filename)
                 return None
-            file = await telegram_file.get_file()
-            return bytes(await file.download_as_bytearray())
+            data = bytes(await file.download_as_bytearray())
         except Exception:
             log.warning(
                 "telegram file %s couldn't be downloaded — continuing", filename, exc_info=True
             )
             return None
+        # the one check that can't be lied to: whatever either size claimed,
+        # a file that's actually too big is never kept in memory
+        if actual_size_exceeds_cap(data, MAX_ATTACHMENT_BYTES):
+            log.warning(
+                "telegram file %s exceeded the size cap after download (%d bytes) — discarded",
+                filename,
+                len(data),
+            )
+            return None
+        return data
 
     async def _on_button(self, update: Update, context: Any) -> None:
         query = update.callback_query
         data = query.data if query is not None else ""
         if not data or not data.startswith(_CALLBACK_PREFIX):
             return
-        await query.answer()
         action, _, id_part = data[len(_CALLBACK_PREFIX) :].partition(":")
         if not id_part.isdigit() or action not in ("approve", "deny"):
             log.warning("odd telegram callback data: %r", data)
+            with contextlib.suppress(Exception):
+                await query.answer()
             return
         decision = APPROVED if action == "approve" else DENIED
-        await self._decide(int(id_part), decision)
+        note = await self._decide_and_explain(int(id_part), decision)
+        with contextlib.suppress(Exception):  # the callback is still answered either way
+            # a fresh decision needs no toast — the outcome message from
+            # _carry_out is the acknowledgment; a stale or double tap gets
+            # a quick toast instead of landing with no feedback at all
+            await query.answer(text=note) if note else await query.answer()
         with contextlib.suppress(
             Exception
         ):  # message too old to edit — non-fatal, the store has the truth
-            # the tap only retires the buttons — the question text stays,
-            # and the outcome message from _carry_out is the acknowledgment
-            # (a stale tap's outcome already landed when it was decided)
             await query.edit_message_reply_markup(reply_markup=None)
 
     async def _on_error(self, update: object, context: Any) -> None:

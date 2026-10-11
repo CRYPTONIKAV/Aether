@@ -6,6 +6,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from ..authz.approvals import EXPIRED, PENDING
+
 
 class UnknownToolError(LookupError):
     """A tool name that isn't in the flat namespace."""
@@ -71,6 +73,7 @@ class ApprovalDecider(Protocol):
     """What messaging connectors need from the approvals store."""
 
     async def decide(self, approval_id: int, decision: str) -> Any: ...
+    async def get(self, approval_id: int) -> Any: ...
 
 
 class MessagingConnector:
@@ -109,6 +112,25 @@ class MessagingConnector:
         if result is not None and self._on_decision is not None:
             await self._on_decision(approval_id, decision)
         return result
+
+    async def _decide_and_explain(self, approval_id: int, decision: str) -> str | None:
+        """Runs the shared decide path; returns None on a fresh decision (no
+        feedback needed — the carry-out message is the acknowledgment), or
+        a short, platform-neutral phrase when the tap didn't apply, so a
+        stale or double tap is never met with silence."""
+        if await self._decide(approval_id, decision) is not None:
+            return None
+        if self._approvals is None:
+            return "that request could not be found."
+        approval = await self._approvals.get(approval_id)
+        if approval is None:
+            return "that request could not be found."
+        if approval.status in (PENDING, EXPIRED):
+            # still PENDING but decide() couldn't apply it — the only way
+            # that happens is the expiry clock running out between the
+            # button rendering and this tap
+            return "that approval has expired."
+        return "that request was already decided."
 
     async def _emit_inbound(self, message: InboundMessage) -> None:
         if self._on_inbound is not None:
