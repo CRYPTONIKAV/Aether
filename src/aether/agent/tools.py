@@ -25,7 +25,6 @@ from ..workspace import SecretRejected, WorkspaceWriteError
 log = logging.getLogger("aether.agent.tools")
 
 # what the tools need, expressed as protocols the loop actually owns
-EventSearch = Callable[..., Awaitable[Any]]
 NativeHandler = Callable[[dict[str, Any]], Awaitable[str]]
 
 
@@ -58,6 +57,15 @@ def _parse_int_param(
     except (TypeError, ValueError):
         return None
     return max(minimum, value) if minimum is not None else value
+
+
+# the one plain reply every hard failure gives the user — a dead model
+# turn and a dead embedding layer say the same thing, never a technical
+# detail. memory_search returns it when the semantic layer is missing or
+# failing, so the model relays exactly this.
+FAILURE_REPLY = (
+    "Something went wrong on my side — I couldn't finish that just now. Nothing else is affected."
+)
 
 
 # how a tool call is said in plain words at each moment it reaches the
@@ -332,6 +340,11 @@ def format_trace(t: Any) -> str:
         lines.append(f"  seen: {len(observations)} new event(s)")
         for o in observations:
             lines.append(f"    [{o.get('source')}/{o.get('kind')}] {o.get('line', '')}")
+    recalled = trigger.get("recalled") or []
+    if recalled:
+        lines.append(f"  kept in mind: {len(recalled)} related memory(ies)")
+        for r in recalled:
+            lines.append(f"    [{r.get('source')}/{r.get('kind')}] {r.get('line', '')}")
     routine = p.get("routine")
     if routine:
         lines.append(
@@ -458,6 +471,7 @@ def register_native_tools(
     audit: Any = None,
     config_manager: Any = None,
     workspace: Any = None,
+    vectors: Any = None,
 ) -> int:
     """Add Aether's own tools to the flat namespace. Returns how many.
 
@@ -469,29 +483,49 @@ def register_native_tools(
 
     async def memory_search(params: dict[str, Any]) -> str:
         query = str(params.get("query", "")).strip()
-        if not query:
-            return "memory_search needs a query."
         limit = _parse_int_param(params, "limit", 5)
         if limit is None:
             return "memory_search needs limit to be a number."
-        found = await events.search(query, limit=limit)
-        if not found:
+        # a bracketed id from an earlier hit re-reads one whole stored
+        # document, untruncated, page by page — no query needed. An absent
+        # id must stay absent: the parse helper clamps to `minimum`, which
+        # would turn every plain query into a read of event 1
+        if params.get("event_id") not in (None, ""):
+            event_id = _parse_int_param(params, "event_id", 1, minimum=1)
+            if event_id is None:
+                return "memory_search needs event_id to be a number."
+            if vectors is not None:
+                text = await vectors.read_document(event_id)
+                if text:
+                    return text
+            event = await events.get(event_id)
+            if event is None:
+                return f"No stored memory with id {event_id}."
+            p = event.payload or {}
+            if p.get("text") and p.get("filename"):
+                # the pre-vector read-back: the payload's text preview
+                return f"{p.get('filename')}:\n" + str(p.get("text", ""))
+            return _clip(json.dumps(event.payload, default=str, ensure_ascii=False), 2000)
+        if not query:
+            return "memory_search needs a query."
+        # semantic or nothing — a missing or failing embedding layer gets
+        # the same plain reply a dead model turn gets, so the user hears
+        # one honest message instead of a degraded guess
+        if vectors is None or not vectors.enabled:
+            return FAILURE_REPLY
+        try:
+            hits = await vectors.search(query, limit=limit)
+        except Exception:
+            log.warning("memory_search failed — embedding layer error", exc_info=True)
+            return FAILURE_REPLY
+        if not hits:
             return "No matching memories."
         lines = []
-        for e in found:
-            p = e.payload or {}
-            if p.get("text") and p.get("filename"):
-                # a shared document — the one channel where the model can
-                # re-read what the file said; the JSON dump would clip the
-                # text away to nothing
-                lines.append(
-                    f"[{e.id}] {e.occurred_at:%Y-%m-%d %H:%M} {e.source}/{e.kind} "
-                    f"— {p.get('filename')}:\n" + _clip(str(p.get("text", "")), 2000)
-                )
-                continue
+        for hit in hits:
+            where = ", ".join(part for part in (hit.filename, hit.location) if part)
             lines.append(
-                f"[{e.id}] {e.occurred_at:%Y-%m-%d %H:%M} {e.source}/{e.kind}: "
-                + _clip(json.dumps(e.payload, default=str, ensure_ascii=False))
+                f"[{hit.event_id}] {hit.occurred_at:%Y-%m-%d %H:%M} "
+                f"{hit.source}/{hit.kind}" + (f" — {where}:\n" if where else ":\n") + hit.text
             )
         return "\n".join(lines)
 
@@ -869,12 +903,19 @@ def register_native_tools(
             _spec(
                 "memory_search",
                 "Search Aether's cross-app memory for past events, messages, "
-                "screen captures, and notes.",
+                "screen captures, shared documents, and notes. Semantic — "
+                "describe the topic, don't just repeat keywords. A hit from a "
+                "document carries its bracketed id; pass that id as event_id "
+                "to re-read the whole stored document, page by page.",
                 {
                     "query": {"type": "string", "description": "what to look for"},
                     "limit": {"type": "integer", "description": "max results (default 5)"},
+                    "event_id": {
+                        "type": "integer",
+                        "description": "re-read one whole stored document by its id",
+                    },
                 },
-                ["query"],
+                [],
             ),
             memory_search,
         ),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
 
 from aether.agent.traces import Trace
@@ -10,6 +11,7 @@ from aether.llm.types import Message, ToolCall, ToolResult, ToolSpec, Turn
 from aether.memory.context import AgentContext
 from aether.memory.entities import Entity, PersonRef
 from aether.memory.events import Event, IngestResult
+from aether.memory.vectors import MemoryHit
 from aether.routines import Routine
 from aether.scheduler.jobs import PENDING as JOB_PENDING
 from aether.scheduler.jobs import ScheduledAction
@@ -508,11 +510,9 @@ class FakeEventStore:
         self,
         events: dict[int, Event] | None = None,
         recent_counts: dict[str, int] | None = None,
-        search_results: list[Event] | None = None,
     ) -> None:
         self.events = dict(events or {})
         self.recent_counts = dict(recent_counts or {})
-        self.search_results = list(search_results or [])
         self.updates: list[tuple[int, float, bool, dict]] = []
         self.ingested: list[dict] = []
         # set to override what ingest() returns (e.g. filtered:contacts)
@@ -541,9 +541,6 @@ class FakeEventStore:
     async def recent(self, limit: int = 50) -> list[Event]:
         return [self.events[i] for i in sorted(self.events, reverse=True)][:limit]
 
-    async def search(self, query: str, limit: int = 10, scan_window: int = 200) -> list[Event]:
-        return self.search_results[:limit]
-
     async def count_recent(self, source: str, hours: float = 1.0) -> int:
         return self.recent_counts.get(source, 0)
 
@@ -558,6 +555,77 @@ class FakeEventStore:
         self.updates.append(
             (event_id, score, memorable, {"category": category, "actionability": actionability})
         )
+
+
+class FakeEmbedder:
+    """Embedder double: every distinct word gets its own orthogonal axis, so
+    texts that share words land close by cosine. Deterministic, no network."""
+
+    model = "fake-embedding"
+    dims = 64
+
+    def __init__(self) -> None:
+        self._axes: dict[str, int] = {}
+        self.calls: list[tuple[list[str], str]] = []
+
+    def _vector(self, text: str) -> list[float]:
+        vector = [0.0] * self.dims
+        for word in re.findall(r"\w+", text.lower()):
+            if word not in self._axes:
+                self._axes[word] = len(self._axes)
+            vector[self._axes[word] % self.dims] += 1.0
+        if not any(vector):
+            vector[0] = 1.0
+        return vector
+
+    async def embed(self, texts: list[str], task: str = "document") -> list[list[float]]:
+        self.calls.append((texts, task))
+        return [self._vector(text) for text in texts]
+
+
+class FakeVectorMemory:
+    """VectorMemory double: canned hits, recorded calls — loop and tool
+    tests never touch a database or the network."""
+
+    def __init__(self, hits: list[MemoryHit] | None = None, enabled: bool = True) -> None:
+        self.enabled = enabled
+        self.hits = list(hits or [])
+        self.queries: list[str] = []
+        self.backfills = 0
+        self.indexed_events: list[dict] = []
+        self.indexed_docs: list[dict] = []
+        self.documents: dict[int, str] = {}
+
+    async def backfill(self, batch: int = 50) -> int | None:
+        self.backfills += 1
+        return None
+
+    async def search(self, query: str, limit: int = 8, min_similarity: float = 0.35):
+        self.queries.append(query)
+        return self.hits[:limit]
+
+    # the loop's recall path: the query embedding is split from the SQL so
+    # a turn can overlap the two — the double records at the embed step,
+    # where the query text still exists
+    async def embed_query(self, query: str) -> list[float] | None:
+        self.queries.append(query)
+        return [1.0]
+
+    async def search_vector(self, q, limit: int = 8, min_similarity: float = 0.35):
+        return self.hits[:limit]
+
+    async def index_event(self, event_id, source, kind, payload, occurred_at):
+        self.indexed_events.append(
+            {"event_id": event_id, "source": source, "kind": kind, "payload": payload}
+        )
+
+    async def index_doc(self, event_id, source, filename, parts):
+        self.indexed_docs.append(
+            {"event_id": event_id, "source": source, "filename": filename, "parts": parts}
+        )
+
+    async def read_document(self, event_id: int) -> str:
+        return self.documents.get(event_id, "")
 
 
 class FakeAgentSettings:

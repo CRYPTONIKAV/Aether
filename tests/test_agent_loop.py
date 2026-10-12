@@ -9,6 +9,7 @@ become observations; configured source polls run on schedule.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -31,6 +32,7 @@ from fakes import (
     FakeSurfaceConnector,
     FakeTraces,
     FakeTranscript,
+    FakeVectorMemory,
 )
 
 from aether.agent.loop import (
@@ -62,6 +64,7 @@ from aether.connectors.base import InboundMessage
 from aether.connectors.registry import ToolRegistry
 from aether.llm.types import ImageBlock, ToolCall, ToolResult, ToolSpec, Turn
 from aether.memory.events import Event, IngestResult
+from aether.memory.vectors import MemoryHit
 from aether.scheduler.jobs import ScheduledAction
 from aether.secret_env import EnvResolver
 from aether.workspace import Workspace
@@ -113,6 +116,7 @@ class LoopKit:
         workspace: Any = None,
         transcript: Any = None,
         attachments: Any = None,
+        vectors: Any = None,
     ):
         self.tools = ToolRegistry()
         self.events = FakeEventStore()
@@ -147,6 +151,7 @@ class LoopKit:
             workspace=workspace,
             transcript=transcript,
             attachments=attachments,
+            vectors=vectors,
         )
         if config_manager is not None:
             # the real native config tools, so a /config write goes through
@@ -714,6 +719,138 @@ async def test_a_linked_app_that_dies_before_carry_out_is_said_plainly() -> None
 # ---------------------------------------------------------------------------
 # the tick: messages, observations, quiet
 # ---------------------------------------------------------------------------
+
+
+def _hit(
+    event_id: int,
+    kind: str = "chat_message",
+    source: str = "telegram",
+    filename: str = "",
+    location: str = "",
+    text: str = "an old note",
+    score: float = 0.9,
+) -> MemoryHit:
+    return MemoryHit(
+        event_id=event_id,
+        chunk_id=event_id * 10,
+        source=source,
+        kind=kind,
+        filename=filename,
+        location=location,
+        text=text,
+        score=score,
+        occurred_at=datetime(2026, 9, 30, tzinfo=UTC),
+    )
+
+
+async def test_a_question_pulls_related_memories_into_the_prompt() -> None:
+    provider = FakeProvider([Turn(text="here's what I found")])
+    vectors = FakeVectorMemory(
+        hits=[
+            _hit(
+                7,
+                kind="shared_doc",
+                filename="OSY.pdf",
+                location="page 3",
+                text="deadlock prevention",
+            )
+        ]
+    )
+    kit = LoopKit(provider, vectors=vectors)
+    kit.loop.submit_message(_msg("explain deadlock prevention from OSY.pdf"))
+    await kit.loop._tick()
+
+    # the question reached the vector layer as one semantic query
+    assert len(vectors.queries) == 1
+    assert "deadlock" in vectors.queries[0]
+    messages = provider.calls[0][1]
+    recalled = [m for m in messages if "[related memory" in m.text]
+    assert recalled, "the recall line must reach the model's history"
+    assert "OSY.pdf, page 3" in recalled[0].text  # the citation is in front
+    assert "deadlock prevention" in recalled[0].text
+    # recall rides the pinned head: it survives windowing
+    assert messages[0].text.startswith("[working context]")
+    # and the trace keeps the plain record of what was kept in mind
+    assert kit.traces.created[-1]["payload"]["trigger"]["recalled"][0]["id"] == 7
+
+
+async def test_no_recall_when_nobody_asked_or_vectors_are_off() -> None:
+    # an unprompted tick (observations only) never spends a query
+    provider = FakeProvider([Turn(text="")])
+    vectors = FakeVectorMemory(hits=[_hit(1)])
+    kit = LoopKit(provider, vectors=vectors)
+    kit.events.events[1] = _event(1)
+    await kit.loop._tick()
+    assert vectors.queries == []
+
+    # a solicited tick with the layer disabled doesn't query either
+    provider2 = FakeProvider([Turn(text="hi")])
+    off = FakeVectorMemory(enabled=False)
+    kit2 = LoopKit(provider2, vectors=off)
+    kit2.loop.submit_message(_msg("hey"))
+    await kit2.loop._tick()
+    assert off.queries == []
+
+
+async def test_a_broken_vector_layer_costs_the_turn_nothing() -> None:
+    class ExplodingVectors:
+        enabled = True
+
+        async def embed_query(self, query):
+            raise RuntimeError("embedding api down")
+
+        async def search_vector(self, q, limit=8, min_similarity=0.35):
+            raise RuntimeError("embedding api down")
+
+    provider = FakeProvider([Turn(text="still here")])
+    kit = LoopKit(provider, vectors=ExplodingVectors())
+    kit.loop.submit_message(_msg("what do you remember?"))
+    await kit.loop._tick()
+    assert kit.connector.sent == ["still here"]  # the turn survived
+
+
+async def test_backfill_runs_beside_the_loop_never_on_a_tick() -> None:
+    provider = FakeProvider([Turn(text="hi")])
+    vectors = FakeVectorMemory()
+    kit = LoopKit(provider, vectors=vectors)
+    kit.loop.submit_message(_msg("hello"))
+    await kit.loop._tick()
+    # the answering tick never waits on catch-up indexing
+    assert vectors.backfills == 0
+
+    # the background loop drains on its own schedule instead
+    kit.loop._running = True
+    task = asyncio.create_task(kit.loop._backfill_loop())
+    await asyncio.sleep(0.05)
+    assert vectors.backfills >= 1
+    kit.loop._running = False
+    task.cancel()  # it is resting between passes — cancel, don't wait
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+async def test_recall_excludes_what_the_turn_already_sees() -> None:
+    provider = FakeProvider([Turn(text="got it")])
+    # 5 is in the working context; 2 is this tick's chat observation;
+    # 9 is a shared_doc observation — that one STAYS retrievable, which
+    # is what makes "what's in slide 3" answerable in the same tick
+    vectors = FakeVectorMemory(
+        hits=[
+            _hit(5),
+            _hit(2),
+            _hit(9, kind="shared_doc", filename="deck.pptx", location="slide 3"),
+        ]
+    )
+    kit = LoopKit(provider, vectors=vectors)
+    kit.context.events = [_event(5)]
+    kit.events.events[2] = _event(2, source="telegram", kind="chat_message")
+    kit.loop.submit_message(_msg("whats in slide 3"))
+    await kit.loop._tick()
+
+    assert vectors.queries == ["whats in slide 3"]
+    lines = [m.text for m in provider.calls[0][1] if "[related memory" in m.text]
+    assert len(lines) == 1
+    assert "deck.pptx, slide 3" in lines[0]
 
 
 async def test_inbound_message_becomes_memory_and_reaches_the_model() -> None:

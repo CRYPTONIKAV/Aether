@@ -68,6 +68,9 @@ class LLMConfig(BaseModel):
     model: str = "claude-opus-5"
     vision_model: str | None = None
     salience_model: str | None = None
+    # the free embedding model that makes memory semantically searchable;
+    # none (or a missing Gemini key) leaves memory search unavailable
+    embedding_model: str | None = "gemini-embedding-001"
     max_tokens: int = 16000
     # Ollama's vision ability depends entirely on which model was pulled;
     # the hosted providers are inherently vision-capable. Setting a

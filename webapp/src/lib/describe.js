@@ -334,6 +334,17 @@ export function describeObservation(o) {
   return detail ? `${title} — ${detail}` : title;
 }
 
+// A recalled memory's line is the backend's own plain citation —
+// "[related memory — OSY.pdf, page 3] …" or "[related memory — @vedant on
+// telegram, 2026-09-30] …". Unwrap it into "where: what", so the where
+// stays in front and nothing internal leaks through.
+export function describeRecall(r) {
+  const m = /^\[related memory — (.*)\]\s*(.*)$/s.exec(r.line || "");
+  const where = m ? m[1] : "";
+  const text = m ? m[2] : r.line || "";
+  return where ? `${where}: ${quote(text, 220)}` : quote(text, 220);
+}
+
 // A routine's trigger is a condition dict ({source, kind, from, contains}) —
 // render it as a plain when-clause, never the raw dict or kind token.
 export function describeTrigger(trigger) {

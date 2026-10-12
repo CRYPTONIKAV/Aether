@@ -22,7 +22,7 @@ E2E_ENABLED = os.environ.get("AETHER_TEST_E2E", "") == "1"
 _TABLES = (
     "audit_log, pending_approvals, events, identities, identity_handles, "
     "entity_notes, chat_messages, scheduled_actions, routines, decision_traces, "
-    "config_overrides, oauth_tokens, app_secrets"
+    "config_overrides, oauth_tokens, app_secrets, memory_chunks"
 )
 
 
