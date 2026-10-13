@@ -457,15 +457,22 @@ class AgentLoop:
         """Index the events that predate vector memory (or lost a race with
         a rate limit), 50 oldest at a time: tight passes while history is
         draining, a minute's rest once caught up. A failed pass just
-        retries — indexed_at is the ledger, so nothing is ever lost."""
+        retries — indexed_at is the ledger, so nothing is ever lost. The
+        same cadence also drains the one-off job of sealing legacy
+        plaintext embeddings — both converge to no-op."""
         assert self._vectors is not None
         while self._running:
+            try:
+                legacy = await self._vectors.encrypt_legacy_chunks(500)
+            except Exception:
+                log.exception("legacy embedding encryption pass failed — retrying later")
+                legacy = 0
             try:
                 handled = await self._vectors.backfill(50)
             except Exception:
                 log.exception("vector backfill pass failed — pausing before the retry")
                 handled = None
-            await asyncio.sleep(1 if handled else 60)
+            await asyncio.sleep(1 if (legacy or handled) else 60)
 
     def notify(self) -> None:
         """Wake the loop early — used after screen captures, poll results,

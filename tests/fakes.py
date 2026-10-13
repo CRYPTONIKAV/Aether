@@ -627,6 +627,11 @@ class FakeVectorMemory:
         self.backfills += 1
         return None
 
+    # the loop's maintenance cadence also asks for the one-off sealing of
+    # legacy plaintext embeddings — always converged in tests
+    async def encrypt_legacy_chunks(self, batch: int = 500) -> int:
+        return 0
+
     async def search(self, query: str, limit: int = 8, min_similarity: float = 0.35):
         self.queries.append(query)
         return self.hits[:limit]

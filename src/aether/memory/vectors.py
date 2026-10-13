@@ -12,10 +12,12 @@ text — the event payload keeps only a 20k-char preview, but the chunks
 cover the whole document. `backfill` picks up events that predate the
 feature (or lost a race with a rate limit), a batch per tick.
 
-Cosine similarity runs in SQL over `real[]` with precomputed norms —
-Postgres does the math in C, and chunk counts are personal-agent scale,
-so no pgvector, no numpy, no new service. Chunk text is encrypted like
-event payloads; the embedding itself is derived data, stored plain.
+Cosine similarity runs in Python over decrypted vectors — embeddings are
+content-derived (inversion can reconstruct approximate text from them),
+so they are encrypted like everything else and the ranking can no longer
+happen in SQL. Chunk counts are personal-agent scale (thousands), so
+scanning them in memory costs milliseconds, and only the top-k get their
+text decrypted. No pgvector, no numpy, no new service.
 
 Every public method is failure-tolerant: retrieval must never kill a
 tick, and a missing embedder turns the whole layer into a quiet no-op
@@ -34,7 +36,7 @@ from typing import Any
 
 import asyncpg
 
-from ..llm.embeddings import Embedder, vector_norm
+from ..llm.embeddings import Embedder, pack_vector, unpack_vector, vector_norm
 from .crypto import Cipher
 
 log = logging.getLogger("aether.memory.vectors")
@@ -178,21 +180,19 @@ class VectorMemory:
         """Embed and store `(location, text)` parts as chunk rows. The
         parent event must already be committed (FK). Two-step
         insert-then-update mirrors events.ingest, so the cipher's AAD can
-        carry the row id. A failure raises — callers decide whether to
+        carry the row id — both the text and the packed vector are sealed
+        to their chunk. A failure raises — callers decide whether to
         retry later (backfill leaves indexed_at NULL)."""
         assert self._embedder is not None
         if not parts:
             return
         vectors = await self._embedder.embed([text for _, text in parts], task="document")
-        rows: list[tuple[str, str, list[float], float]] = []
-        for (location, text), vector in zip(parts, vectors, strict=True):
-            rows.append((location, text, vector, vector_norm(vector)))
         async with self._pool.acquire() as conn, conn.transaction():
-            for location, text, vector, norm in rows:
+            for (location, text), vector in zip(parts, vectors, strict=True):
                 row = await conn.fetchrow(
                     "INSERT INTO memory_chunks (event_id, source, kind, filename,"
-                    " location, text_enc, embedding, norm, embed_model, occurred_at)"
-                    " VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
+                    " location, text_enc, embed_model, occurred_at)"
+                    " VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
                     " RETURNING id",
                     event_id,
                     source,
@@ -200,18 +200,20 @@ class VectorMemory:
                     filename,
                     location,
                     b"",
-                    vector,
-                    norm,
                     self._embedder.model,
                     occurred_at,
                 )
                 if row is None:
                     raise RuntimeError(f"chunk insert for event {event_id} returned no id")
                 chunk_id = row["id"]
-                blob = self._cipher.encrypt_text(text, aad=f"chunks:text_enc:{chunk_id}")
+                text_blob = self._cipher.encrypt_text(text, aad=f"chunks:text_enc:{chunk_id}")
+                vec_blob = self._cipher.encrypt_bytes(
+                    pack_vector(vector), aad=f"chunks:embedding_enc:{chunk_id}"
+                )
                 await conn.execute(
-                    "UPDATE memory_chunks SET text_enc = $1 WHERE id = $2",
-                    blob,
+                    "UPDATE memory_chunks SET text_enc = $1, embedding_enc = $2 WHERE id = $3",
+                    text_blob,
+                    vec_blob,
                     chunk_id,
                 )
 
@@ -269,14 +271,38 @@ class VectorMemory:
             await self._mark_indexed(row["id"])
         return len(rows)
 
+    async def encrypt_legacy_chunks(self, batch: int = 500) -> int:
+        """Seal the embeddings that predate encryption, in place, with no
+        re-embedding API calls: read the plain vector, seal it under the
+        row's AAD, null the legacy columns. Returns how many rows were
+        handled (0 = converged). Driven by the loop's backfill task, so it
+        self-paces and survives restarts."""
+        rows = await self._pool.fetch(
+            "SELECT id, embedding FROM memory_chunks"
+            " WHERE embedding IS NOT NULL AND embedding_enc IS NULL"
+            " ORDER BY id LIMIT $1",
+            batch,
+        )
+        for row in rows:
+            blob = self._cipher.encrypt_bytes(
+                pack_vector(list(row["embedding"])), aad=f"chunks:embedding_enc:{row['id']}"
+            )
+            await self._pool.execute(
+                "UPDATE memory_chunks SET embedding_enc = $1,"
+                " embedding = NULL, norm = NULL WHERE id = $2",
+                blob,
+                row["id"],
+            )
+        return len(rows)
+
     # -- retrieval -----------------------------------------------------------------
 
     async def search(
         self, query: str, limit: int = 8, min_similarity: float = 0.35
     ) -> list[MemoryHit]:
         """Semantic search: embed the question, rank every chunk by cosine.
-        Postgres does the dot product over `real[]`; the query norm is
-        precomputed so the SQL only divides. Hits under the bar drop."""
+        The ranking happens in `search_vector`, over decrypted vectors —
+        hits under the bar drop."""
         q = await self.embed_query(query)
         if q is None:
             return []
@@ -299,27 +325,45 @@ class VectorMemory:
     async def search_vector(
         self, q: list[float], limit: int = 8, min_similarity: float = 0.35
     ) -> list[MemoryHit]:
-        """The SQL half: rank every chunk of this model's space by cosine
-        against an already-embedded query."""
+        """The ranking half: cosine of every chunk of this model's space
+        against an already-embedded query. Vectors are encrypted, so the
+        math happens here — every row decrypts to its packed vector, and
+        only the top-k pay for a text decryption too. Rows written before
+        the encryption change still carry a plain `embedding`, read until
+        the legacy pass seals them."""
         if self._embedder is None:
             return []
-        qnorm = vector_norm(q) or 1.0
         rows = await self._pool.fetch(
             "SELECT id, event_id, source, kind, filename, location, text_enc,"
-            " occurred_at,"
-            " (SELECT sum(u * v)::float8 FROM unnest(embedding, $1::real[]) AS t(u, v))"
-            "   / ($2::float8 * norm) AS score"
-            " FROM memory_chunks WHERE embed_model = $3"
-            " ORDER BY score DESC LIMIT $4",
-            q,
-            qnorm,
+            " embedding_enc, embedding, occurred_at"
+            " FROM memory_chunks WHERE embed_model = $1",
             self._embedder.model,
-            limit,
         )
-        hits: list[MemoryHit] = []
+        qnorm = vector_norm(q) or 1.0
+        ranked: list[tuple[float, asyncpg.Record]] = []
         for row in rows:
-            if row["score"] < min_similarity:
+            try:
+                if row["embedding_enc"] is not None:
+                    vector = unpack_vector(
+                        self._cipher.decrypt_bytes(
+                            row["embedding_enc"], aad=f"chunks:embedding_enc:{row['id']}"
+                        )
+                    )
+                else:
+                    vector = list(row["embedding"] or [])
+                if not vector:
+                    continue
+                score = sum(u * v for u, v in zip(q, vector, strict=False)) / (
+                    qnorm * vector_norm(vector)
+                )
+            except Exception:
+                log.warning("chunk %s vector undecryptable — skipped", row["id"])
                 continue
+            if score >= min_similarity:
+                ranked.append((float(score), row))
+        ranked.sort(key=lambda pair: pair[0], reverse=True)
+        hits: list[MemoryHit] = []
+        for score, row in ranked[:limit]:
             try:
                 text = self._cipher.decrypt_text(
                     row["text_enc"], aad=f"chunks:text_enc:{row['id']}"
@@ -336,7 +380,7 @@ class VectorMemory:
                     filename=row["filename"],
                     location=row["location"],
                     text=text,
-                    score=float(row["score"]),
+                    score=score,
                     occurred_at=row["occurred_at"],
                 )
             )

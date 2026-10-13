@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import struct
 from typing import Literal, Protocol, runtime_checkable
 
 from google import genai
@@ -42,6 +43,19 @@ class Embedder(Protocol):
 
 def vector_norm(values: list[float]) -> float:
     return math.sqrt(sum(v * v for v in values))
+
+
+def pack_vector(values: list[float]) -> bytes:
+    """Float32 little-endian — the on-disk width REAL[] had, so encrypting
+    the vector costs the same storage the plain column did."""
+    return struct.pack(f"<{len(values)}f", *values)
+
+
+def unpack_vector(blob: bytes) -> list[float]:
+    count, remainder = divmod(len(blob), 4)
+    if remainder:
+        raise ValueError(f"packed vector has a partial float: {len(blob)} bytes")
+    return list(struct.unpack(f"<{count}f", blob))
 
 
 def _retry_delay(exc: Exception) -> float | None:
