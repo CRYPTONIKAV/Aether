@@ -193,6 +193,45 @@ class TestExtraction:
         text = extract_doc_text("letter.pdf", "application/pdf", MINIMAL_PDF)
         assert "hello world" in text
 
+    def test_pdf_missing_dependency_is_distinguishable_and_actionable(
+        self, monkeypatch, caplog
+    ) -> None:
+        """A missing pypdf must not look like a corrupt file: it's logged
+        loudly (ERROR, naming the fix) instead of blending into the quiet
+        per-file WARNING every other extraction failure gets."""
+        import sys
+
+        monkeypatch.setitem(sys.modules, "pypdf", None)  # simulates "not installed"
+        with caplog.at_level("ERROR", logger="aether.connectors.attachments"):
+            text = extract_doc_text("letter.pdf", "application/pdf", MINIMAL_PDF)
+        assert text == ""
+        error_records = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert error_records, "missing pypdf must log at ERROR, not just the usual WARNING"
+        assert "pypdf" in error_records[0].message
+        assert "install" in error_records[0].message.lower()
+
+    def test_pdf_unexpected_parsing_errors_still_degrade_quietly(self, caplog) -> None:
+        """A genuine parsing failure (not a missing dependency) must keep
+        its existing, quieter treatment — only the dependency case gets the
+        louder log level."""
+        with caplog.at_level("WARNING", logger="aether.connectors.attachments"):
+            text = extract_doc_text("letter.pdf", "application/pdf", b"not a pdf at all")
+        assert text == ""
+        assert not any(r.levelname == "ERROR" for r in caplog.records)
+        assert any(r.levelname == "WARNING" for r in caplog.records)
+
+    def test_pdf_encrypted_or_unreadable_extracts_to_nothing_never_raises(self) -> None:
+        from pypdf import PdfReader, PdfWriter
+
+        reader = PdfReader(io.BytesIO(MINIMAL_PDF))
+        writer = PdfWriter()
+        writer.append(reader)
+        writer.encrypt(user_password="secret", owner_password="secret-owner")
+        buf = io.BytesIO()
+        writer.write(buf)
+
+        assert extract_doc_text("locked.pdf", "application/pdf", buf.getvalue()) == ""
+
     def test_docx(self) -> None:
         xml = (
             b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
@@ -242,6 +281,68 @@ class TestExtraction:
         assert extract_doc_text("a.txt", "", garbage) != ""  # plain text survives anything
 
 
+class TestZipBombProtection:
+    """docx/xlsx/pptx are zips of XML — MAX_ATTACHMENT_BYTES only bounds the
+    compressed upload, so these guard the decompressed side: a small
+    crafted archive must never be allowed to blow up memory/CPU."""
+
+    def _bomb_zip(self, member: str, size: int) -> bytes:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(member, b"A" * size)  # deflates to a tiny compressed size
+        return buf.getvalue()
+
+    def test_oversized_member_is_rejected_before_full_decompression(self) -> None:
+        from aether.connectors.attachments import MAX_ZIP_ENTRY_BYTES
+
+        bomb = self._bomb_zip("word/document.xml", MAX_ZIP_ENTRY_BYTES + 1024)
+        assert extract_doc_text("letter.docx", "", bomb) == ""
+
+    def test_many_small_members_are_capped_by_the_total_budget(self) -> None:
+        from aether.connectors.attachments import MAX_ZIP_ENTRY_BYTES, MAX_ZIP_TOTAL_BYTES
+
+        # each member is under the per-entry cap, but enough of them blow
+        # past the combined-document cap
+        per_member = MAX_ZIP_ENTRY_BYTES // 2
+        count = (MAX_ZIP_TOTAL_BYTES // per_member) + 2
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("xl/sharedStrings.xml", b"<sst/>")
+            for i in range(count):
+                zf.writestr(f"xl/worksheets/sheet{i}.xml", b"A" * per_member)
+        assert extract_doc_text("book.xlsx", "", buf.getvalue()) == ""
+
+    def test_too_many_archive_entries_is_rejected(self) -> None:
+        from aether.connectors.attachments import MAX_ZIP_ENTRIES
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            for i in range(MAX_ZIP_ENTRIES + 1):
+                zf.writestr(f"xl/worksheets/sheet{i}.xml", b"<x/>")
+        assert extract_doc_text("book.xlsx", "", buf.getvalue()) == ""
+
+    def test_xml_doctype_and_entity_declarations_are_rejected(self) -> None:
+        """The 'billion laughs' shape: a tiny entity declaration that
+        expands to an enormous parse — refused outright, not expanded."""
+        xml = (
+            b'<?xml version="1.0"?>'
+            b'<!DOCTYPE lolz [<!ENTITY lol "lol">]>'
+            b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            b"<w:body><w:p><w:r><w:t>&lol;</w:t></w:r></w:p></w:body></w:document>"
+        )
+        docx = _zip({"word/document.xml": xml})
+        assert extract_doc_text("letter.docx", "", docx) == ""
+
+    def test_normal_documents_are_unaffected_by_the_new_caps(self) -> None:
+        """The bounded reader must still produce identical output for an
+        ordinary, well-formed document — these are the same fixtures
+        TestExtraction uses for docx/xlsx/pptx."""
+        xml = (
+            b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            b"<w:body><w:p><w:r><w:t>Hello</w:t></w:r></w:p></w:body></w:document>"
+        )
+        docx = _zip({"word/document.xml": xml})
+        assert extract_doc_text("letter.docx", "", docx) == "Hello"
 class TestStructuredParts:
     """extract_doc_parts: the (location, text) form the vector memory
     indexes — pages and slides carry the numbering the file itself has,

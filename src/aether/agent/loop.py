@@ -34,7 +34,7 @@ from typing import Any
 
 from ..authz.approvals import APPROVED, DENIED, Approval, Approvals
 from ..authz.audit import AuditLog, verification_text
-from ..authz.policy import Decision, Policy
+from ..authz.policy import Decision, Policy, params_blob
 from ..composio_bridge import SERVER_ENTRY, SERVER_NAME, ComposioBridge
 from ..config import AppConfig, PollTool
 from ..config_store import ConfigManager
@@ -250,6 +250,16 @@ class SurfaceFanout:
                 log.exception("%s approval presentation failed", connector.name)
         if not self.connectors and self.hub is None:
             log.warning("approval #%d has no surface to appear on", approval_id)
+
+
+def _settled_key(tool: str, params: Any) -> str:
+    """A stable identity for 'this exact tool call' — same tool name and
+    JSON-equivalent parameters, independent of dict key order. Two calls to
+    the same tool with meaningfully different arguments (a different
+    recipient, say) must never collide here; reuses the same canonical
+    serialization the authz policy's param-pattern matching is built on,
+    so nested values and non-JSON types are handled the same safe way."""
+    return f"{tool}\x00{params_blob(params if isinstance(params, dict) else {})}"
 
 
 def _delivered_by_tool(calls: list[dict[str, Any]]) -> bool:
@@ -1394,9 +1404,9 @@ class AgentLoop:
                     continue
                 tool = event.payload.get("tool")
                 if isinstance(tool, str) and tool:
-                    settled[tool] = str(
-                        event.payload.get("plain")
-                        or describe_call(tool, event.payload.get("params"))
+                    params = event.payload.get("params")
+                    settled[_settled_key(tool, params)] = str(
+                        event.payload.get("plain") or describe_call(tool, params)
                     )
 
         def _gate(active: set[str], so_far: list[Message]) -> list[ToolSpec]:
@@ -1801,14 +1811,16 @@ class AgentLoop:
         # loop of identical asks — the guard is code, because the parked
         # result's "do not propose this call again" only lives in the
         # turn that parked it, which a later turn never sees again.
-        if settled and call.name in settled:
-            result = ToolResult(
-                tool_call_id=call.id,
-                name=call.name,
-                content=(f"already settled — {settled[call.name]}. Do not propose it again."),
-            )
-            self._note_call(trace, call, result, ruling=ruling)
-            return result
+        if settled:
+            key = _settled_key(call.name, call.arguments)
+            if key in settled:
+                result = ToolResult(
+                    tool_call_id=call.id,
+                    name=call.name,
+                    content=(f"already settled — {settled[key]}. Do not propose it again."),
+                )
+                self._note_call(trace, call, result, ruling=ruling)
+                return result
 
         # the same call parked earlier this turn: the model repeating
         # itself must not put the same question in front of the user

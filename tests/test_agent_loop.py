@@ -423,6 +423,129 @@ async def test_an_unprompted_turn_cannot_re_park_a_just_reported_action() -> Non
     assert any("Sent the email (to a@b.c)" in c for c in _held_contents(provider, 1))
 
 
+async def test_the_settled_guard_does_not_swallow_a_distinct_call_to_the_same_tool() -> None:
+    """The guard is keyed by tool name AND params. A second, genuinely
+    different call to the same tool (a different recipient) must still be
+    allowed to park for approval — only an exact repeat of the settled call
+    is refused."""
+    provider = FakeProvider(
+        [
+            Turn(
+                text="",
+                tool_calls=[
+                    ToolCall(
+                        id="t1",
+                        name="mail__send_message",
+                        arguments={"to": "someone-else@b.c"},
+                    )
+                ],
+            ),
+            Turn(text=""),
+        ]
+    )
+    kit = LoopKit(provider)
+    kit.add_tool("mail__send_message")
+    kit.events.events[1] = _agent_outcome_event(1)  # settled only for {"to": "a@b.c"}
+
+    await kit.loop._tick()
+
+    assert len(kit.approvals.created) == 1  # a distinct recipient still parks
+    assert kit.connector.approvals_presented != []
+    assert not any("already settled" in c for c in _held_contents(provider, 1))
+
+
+async def test_the_settled_guard_ignores_param_key_order() -> None:
+    """Same tool, same params, different key order must still be recognized
+    as the same call — canonicalization must not let dict ordering create a
+    false difference."""
+    outcome = _agent_outcome_event(1)
+    outcome.payload = {
+        **outcome.payload,
+        "params": {"to": "a@b.c", "cc": "x@y.z"},
+    }
+    provider = FakeProvider(
+        [
+            Turn(
+                text="",
+                tool_calls=[
+                    ToolCall(
+                        id="t1",
+                        name="mail__send_message",
+                        # same params, reordered
+                        arguments={"cc": "x@y.z", "to": "a@b.c"},
+                    )
+                ],
+            ),
+            Turn(text=""),
+        ]
+    )
+    kit = LoopKit(provider)
+    kit.add_tool("mail__send_message")
+    kit.events.events[1] = outcome
+
+    await kit.loop._tick()
+
+    assert kit.approvals.created == []
+    assert any("already settled" in c for c in _held_contents(provider, 1))
+
+
+async def test_the_settled_guard_handles_nested_and_missing_params() -> None:
+    """Nested JSON-compatible values must canonicalize consistently, and a
+    settled event or proposal with no params at all must not crash the
+    guard."""
+    outcome = _agent_outcome_event(1)
+    outcome.payload = {
+        **outcome.payload,
+        "params": {"to": "a@b.c", "headers": {"cc": ["x@y.z", "q@r.s"]}},
+    }
+    provider = FakeProvider(
+        [
+            Turn(
+                text="",
+                tool_calls=[
+                    ToolCall(
+                        id="t1",
+                        name="mail__send_message",
+                        arguments={"headers": {"cc": ["x@y.z", "q@r.s"]}, "to": "a@b.c"},
+                    )
+                ],
+            ),
+            Turn(text=""),
+        ]
+    )
+    kit = LoopKit(provider)
+    kit.add_tool("mail__send_message")
+    kit.events.events[1] = outcome
+
+    await kit.loop._tick()
+
+    assert kit.approvals.created == []  # identical nested params still settles
+    assert any("already settled" in c for c in _held_contents(provider, 1))
+
+    # a settled event with no params at all must not raise, and a proposal
+    # with params must not be confused for the no-params settled call
+    no_params_outcome = _agent_outcome_event(2)
+    no_params_outcome.payload = {**no_params_outcome.payload, "params": None}
+    provider2 = FakeProvider(
+        [
+            Turn(
+                text="",
+                tool_calls=[
+                    ToolCall(id="t1", name="mail__send_message", arguments={"to": "new@b.c"})
+                ],
+            ),
+            Turn(text=""),
+        ]
+    )
+    kit2 = LoopKit(provider2)
+    kit2.add_tool("mail__send_message")
+    kit2.events.events[1] = no_params_outcome
+
+    await kit2.loop._tick()
+
+    assert len(kit2.approvals.created) == 1  # not the same call as the params-less settle
+
+
 async def test_a_user_asking_again_still_parks() -> None:
     """The guard is scoped to turns nobody asked for: the user typing
     "send it again" right after the outcome event must still reach the

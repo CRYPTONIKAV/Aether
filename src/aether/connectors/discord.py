@@ -12,7 +12,7 @@ from typing import Any
 import discord
 
 from ..authz.approvals import APPROVED, DENIED
-from .attachments import MAX_ATTACHMENT_BYTES
+from .attachments import MAX_ATTACHMENT_BYTES, actual_size_exceeds_cap, reported_size_exceeds_cap
 from .base import (
     ApprovalDecider,
     Attachment,
@@ -30,9 +30,9 @@ class ApprovalView(discord.ui.View):
     """In-memory approve/deny buttons; they live exactly as long as the bot
     process. Approvals that outlive a restart surface in the web panel."""
 
-    def __init__(self, decide: Any, approval_id: int) -> None:
+    def __init__(self, decide_and_explain: Any, approval_id: int) -> None:
         super().__init__(timeout=None)
-        self._decide = decide
+        self._decide_and_explain = decide_and_explain
         self._approval_id = approval_id
 
     @discord.ui.button(label="Approve", style=discord.ButtonStyle.green)
@@ -44,13 +44,18 @@ class ApprovalView(discord.ui.View):
         await self._finish(interaction, DENIED)
 
     async def _finish(self, interaction: Any, decision: str) -> None:
-        await self._decide(self._approval_id, decision)
+        note = await self._decide_and_explain(self._approval_id, decision)
         for child in self.children:
             child.disabled = True
-        # the tap only retires the buttons — the question text stays, and
-        # the outcome message from _carry_out is the acknowledgment (a stale
-        # tap's outcome already landed when it was decided)
-        await interaction.response.edit_message(view=self)
+        # a fresh decision needs no extra note — `content` is left out
+        # entirely so the question text stays untouched (py-cord treats an
+        # explicit content=None as "clear it", not "leave it alone"); a
+        # stale or double tap gets a short note instead of landing with no
+        # feedback at all
+        if note:
+            await interaction.response.edit_message(content=note, view=self)
+        else:
+            await interaction.response.edit_message(view=self)
 
 
 def _is_dm(channel: Any) -> bool:
@@ -164,15 +169,25 @@ class DiscordConnector(MessagingConnector):
         out: list[Attachment] = []
         for attachment in list(getattr(message, "attachments", None) or []):
             name = getattr(attachment, "filename", None) or "file"
+            if reported_size_exceeds_cap(getattr(attachment, "size", None), MAX_ATTACHMENT_BYTES):
+                log.warning("discord file %s is over the size cap — skipped", name)
+                continue
             try:
-                if (getattr(attachment, "size", 0) or 0) > MAX_ATTACHMENT_BYTES:
-                    log.warning("discord file %s is over the size cap — skipped", name)
-                    continue
                 data = await attachment.read()
-                media = getattr(attachment, "content_type", None) or ""
-                out.append(Attachment(classify_attachment(name, media), name, media, data))
             except Exception:
-                log.warning("discord attachment download failed — continuing", exc_info=True)
+                log.warning("discord file %s download failed — continuing", name, exc_info=True)
+                continue
+            # the one check that can't be lied to: whatever the reported
+            # size claimed, a file that's actually too big is never kept
+            if actual_size_exceeds_cap(data, MAX_ATTACHMENT_BYTES):
+                log.warning(
+                    "discord file %s exceeded the size cap after download (%d bytes) — discarded",
+                    name,
+                    len(data),
+                )
+                continue
+            media = getattr(attachment, "content_type", None) or ""
+            out.append(Attachment(classify_attachment(name, media), name, media, data))
         return out
 
     # -- outbound ------------------------------------------------------------------
@@ -195,5 +210,5 @@ class DiscordConnector(MessagingConnector):
             return
         await self._channel.send(
             content=text,
-            view=ApprovalView(self._decide, approval_id),
+            view=ApprovalView(self._decide_and_explain, approval_id),
         )
