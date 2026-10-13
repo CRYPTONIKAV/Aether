@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import io
 import logging
+import re
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,7 @@ from ..llm.registry import ProviderRegistry
 from ..llm.types import ImageBlock, Message
 from ..memory.entities import Sender
 from ..memory.events import EventStore, IngestResult
+from ..memory.vectors import VectorMemory
 from .base import Attachment, InboundMessage
 
 log = logging.getLogger("aether.connectors.attachments")
@@ -104,9 +106,15 @@ class AttachmentProcessor:
     only; documents keep their extracted text so a later turn can answer
     questions about the content."""
 
-    def __init__(self, providers: ProviderRegistry, events: EventStore) -> None:
+    def __init__(
+        self,
+        providers: ProviderRegistry,
+        events: EventStore,
+        indexer: VectorMemory | None = None,
+    ) -> None:
         self._providers = providers
         self._events = events
+        self._indexer = indexer
 
     async def process(self, message: InboundMessage) -> list[AttachmentResult]:
         out: list[AttachmentResult] = []
@@ -182,6 +190,25 @@ class AttachmentProcessor:
             payload=payload,
             sender=Sender(platform=message.surface, handle=message.handle),
         )
+        # the event payload keeps only a preview — the vector chunks carry
+        # the *full* text, page by page, slide by slide. A failure here
+        # leaves indexed_at unset, so the loop's backfill retries later.
+        if self._indexer is not None and ingested.stored and ingested.event_id is not None:
+            try:
+                await self._indexer.index_doc(
+                    ingested.event_id,
+                    source=message.surface,
+                    filename=attachment.filename,
+                    parts=extract_doc_parts(
+                        attachment.filename, attachment.media_type, attachment.data
+                    ),
+                )
+            except Exception:
+                log.warning(
+                    "document indexing failed for %s — backfill will retry",
+                    attachment.filename,
+                    exc_info=True,
+                )
         return AttachmentResult(ingested=ingested)
 
 
@@ -243,6 +270,34 @@ def extract_doc_text(filename: str, media_type: str, data: bytes) -> str:
     except Exception:
         log.warning("text extraction failed for %s — continuing", filename, exc_info=True)
         return ""
+
+
+def extract_doc_parts(filename: str, media_type: str, data: bytes) -> list[tuple[str, str]]:
+    """The same text as extract_doc_text, but as `(location, text)` parts a
+    document keeps its structure in: one part per pdf page, one per slide.
+    This is what makes "what's in slide 3" a question with an answer — and
+    what the vector memory indexes, so every chunk knows where it lived.
+    Unstructured formats are one whole part; size-splitting happens later on
+    paragraph boundaries."""
+    try:
+        ext = Path(filename or "").suffix.lower().lstrip(".")
+        if ext == "pdf" or "pdf" in (media_type or ""):
+            from pypdf import PdfReader
+
+            reader = PdfReader(io.BytesIO(data))
+            return [
+                (f"page {i}", page.extract_text() or "") for i, page in enumerate(reader.pages, 1)
+            ]
+        if ext == "pptx":
+            return _pptx_parts(data)
+        # everything else is one whole part: retrieval is semantic, so
+        # plain paragraph-boundary chunking finds the right passage — and
+        # only pdf/pptx carry a real location worth citing
+        text = extract_doc_text(filename, media_type, data)
+        return [("", text)] if text else []
+    except Exception:
+        log.warning("structured extraction failed for %s — continuing", filename, exc_info=True)
+        return []
 
 
 def _pdf_text(data: bytes) -> str:
@@ -372,3 +427,21 @@ def _pptx_text(data: bytes) -> str:
             if text:
                 lines.append(text)
         return "\n".join(lines)
+
+
+def _pptx_parts(data: bytes) -> list[tuple[str, str]]:
+    """One `(slide N, text)` part per slide, in true deck order — slide10
+    must not sort before slide2 the way a filename sort would."""
+    slide_re = re.compile(r"ppt/slides/slide(\d+)\.xml$")
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        slides = sorted(
+            (name for name in zf.namelist() if slide_re.search(name)),
+            key=lambda name: int(slide_re.search(name).group(1)),  # type: ignore[union-attr]
+        )
+        parts: list[tuple[str, str]] = []
+        for name in slides:
+            root = ElementTree.fromstring(zf.read(name))
+            text = " ".join((t.text or "").strip() for t in root.iter(f"{_DRAWING_NS}t")).strip()
+            if text:
+                parts.append((f"slide {slide_re.search(name).group(1)}", text))  # type: ignore[union-attr]
+        return parts

@@ -1,7 +1,7 @@
 // The expanded trace: what triggered it, every gated call with its ruling,
 // the reasoning, the reply, and the result. All plain text, colored only by
 // the decision classes.
-import { appLabel, personName, describeTool, describeRule, describeObservation, describeTrigger, humanize, plainText, summarizeResult, quote, paramRows, AUDIT_DECISIONS } from "../lib/describe.js";
+import { appLabel, personName, describeTool, describeRule, describeObservation, describeRecall, describeTrigger, humanize, plainText, summarizeResult, quote, paramRows, AUDIT_DECISIONS } from "../lib/describe.js";
 import { fmtTime } from "../lib/format.js";
 import { statusColor } from "../lib/status.js";
 
@@ -52,6 +52,11 @@ export default function TraceDetail({ t }) {
           {(p.trigger.observations || []).map((o, i) => (
             <div data-testid="trace-line" key={`o${i}`} className="mt-1 text-xs text-ink-3">
               Also seen: {describeObservation(o)}
+            </div>
+          ))}
+          {(p.trigger.recalled || []).map((r, i) => (
+            <div data-testid="trace-line" key={`r${i}`} className="mt-1 text-xs text-ink-3">
+              Kept in mind: {describeRecall(r)}
             </div>
           ))}
         </>
