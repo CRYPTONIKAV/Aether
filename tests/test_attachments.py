@@ -343,6 +343,8 @@ class TestZipBombProtection:
         )
         docx = _zip({"word/document.xml": xml})
         assert extract_doc_text("letter.docx", "", docx) == "Hello"
+
+
 class TestStructuredParts:
     """extract_doc_parts: the (location, text) form the vector memory
     indexes — pages and slides carry the numbering the file itself has,
