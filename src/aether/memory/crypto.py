@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import json
 import secrets
+from typing import Any
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -79,5 +80,7 @@ class Cipher:
     def encrypt_json(self, obj: object, aad: str) -> bytes:
         return self.encrypt_text(json.dumps(obj, ensure_ascii=False, sort_keys=True), aad)
 
-    def decrypt_json(self, blob: bytes, aad: str) -> object:
+    def decrypt_json(self, blob: bytes, aad: str) -> Any:
+        """json.loads — whatever shape was encrypted, as loose as it was
+        stored; the caller knows its section's shape."""
         return json.loads(self.decrypt_text(blob, aad))

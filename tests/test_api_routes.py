@@ -20,7 +20,16 @@ from aether.agent.loop import CaptureRequestBox
 from aether.api.routes import router
 from aether.authz.approvals import Approval
 from aether.composio_bridge import ConnectedApp
-from aether.config import AppConfig, AuthzConfig, AuthzRule, Settings
+from aether.config import (
+    AppConfig,
+    AuthzConfig,
+    AuthzRule,
+    ContactRule,
+    ContactsConfig,
+    MessagingConfig,
+    PlatformToggle,
+    Settings,
+)
 from aether.memory.entities import Entity, EntityNote
 from aether.memory.events import Event, IngestResult
 from aether.scheduler.jobs import ScheduledAction
@@ -432,6 +441,267 @@ async def test_config_feed_serves_the_effective_shape() -> None:
         response = await client.get("/api/config", params={"token": "secret"})
     assert response.status_code == 200
     assert response.json() == payload
+
+
+# ---------------------------------------------------------------------------
+# /api/contacts — the panel's one config edit surface
+# ---------------------------------------------------------------------------
+
+
+def _contacts_config() -> AppConfig:
+    return AppConfig(
+        contacts=ContactsConfig(
+            mode="enforce",
+            allowlist=[ContactRule(platform="telegram", handle="@sam")],
+        )
+    )
+
+
+async def test_contacts_feed_is_token_guarded() -> None:
+    async with _client(_app(None, config=_contacts_config())) as client:
+        assert (await client.get("/api/contacts")).status_code == 401
+
+
+async def test_contacts_feed_serves_the_live_list() -> None:
+    async with _client(_app(None, config=_contacts_config())) as client:
+        response = await client.get("/api/contacts", params={"token": "secret"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["mode"] == "enforce"
+    assert body["allowlist"] == [{"platform": "telegram", "handle": "@sam"}]
+    # no app is connected and none carries its own list — no cards, the
+    # cross-app list and the default carry everything
+    assert body["apps"] == []
+
+
+async def test_contacts_feed_lists_apps_with_their_own_slices() -> None:
+    from aether.config import AppContacts
+
+    config = AppConfig(
+        messaging=MessagingConfig(telegram=PlatformToggle(enabled=True)),
+        contacts=ContactsConfig(
+            mode="enforce",
+            allowlist=[ContactRule(platform="telegram", handle="@sam")],
+            gmail=AppContacts(
+                allowlist=[ContactRule(platform="gmail", handle="friend@example.com")]
+            ),
+        ),
+    )
+    async with _client(_app(None, config=config)) as client:
+        body = (await client.get("/api/contacts", params={"token": "secret"})).json()
+    apps = {a["key"]: a for a in body["apps"]}
+    # telegram: connected via its toggle; its card merges the same-platform
+    # stray from the cross-app bucket, tagged with the list it lives in
+    assert apps["telegram"]["connected"] is True
+    assert apps["telegram"]["mode"] is None  # follows the default
+    assert apps["telegram"]["allowlist"] == [
+        {"platform": "telegram", "handle": "@sam", "list": "any"}
+    ]
+    # gmail: not connected, but its own list shows it — marked honestly
+    assert apps["gmail"]["connected"] is False
+    assert apps["gmail"]["allowlist"] == [
+        {"platform": "gmail", "handle": "friend@example.com", "list": "app"}
+    ]
+    # slack/discord: nothing connected, nothing configured — no cards
+    assert "discord" not in apps
+    assert "slack" not in apps
+
+
+async def test_contacts_feed_lists_a_connected_composio_app() -> None:
+    from fakes import FakeComposioBridge
+
+    bridge = FakeComposioBridge(
+        accounts=[ConnectedApp(id="ca_1", toolkit="gmail", status="ACTIVE", identity="")]
+    )
+    config = _contacts_config()
+    async with _client(_app(None, config=config, composio=bridge)) as client:
+        body = (await client.get("/api/contacts", params={"token": "secret"})).json()
+    apps = {a["key"]: a for a in body["apps"]}
+    assert apps["gmail"]["connected"] is True
+
+
+async def test_add_contact_writes_through_the_manager_and_audits() -> None:
+    manager = FakeConfigManager()
+    audit = FakeAudit()
+    async with _client(
+        _app(None, config=_contacts_config(), config_manager=manager, audit=audit)
+    ) as client:
+        response = await client.post(
+            "/api/contacts/allowlist",
+            params={"token": "secret"},
+            json={"platform": "discord", "handle": "@priya"},
+        )
+    assert response.status_code == 200
+    assert manager.set_calls == [
+        {
+            "op": "add",
+            "path": "contacts.allowlist",
+            "value": {"platform": "discord", "handle": "@priya"},
+            "source": "panel",
+        }
+    ]
+    # the answer is the fresh state, so the page updates in one round-trip
+    assert response.json()["mode"] == "enforce"
+    # the landing is in the audit chain, the way every config change is
+    assert len(audit.entries) == 1
+    assert audit.entries[0]["actor"] == "owner"
+    assert audit.entries[0]["tool_name"] == "set_config"
+    assert audit.entries[0]["outcome"] == "changed from the panel"
+
+
+async def test_add_contact_refused_by_the_manager_is_a_plain_400() -> None:
+    manager = FakeConfigManager(verdict=(False, "telegram/@sam is already on the allowlist."))
+    async with _client(_app(None, config=_contacts_config(), config_manager=manager)) as client:
+        response = await client.post(
+            "/api/contacts/allowlist",
+            params={"token": "secret"},
+            json={"platform": "telegram", "handle": "@sam"},
+        )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "telegram/@sam is already on the allowlist."
+
+
+async def test_add_contact_needs_a_handle() -> None:
+    async with _client(_app(None, config_manager=FakeConfigManager())) as client:
+        response = await client.post(
+            "/api/contacts/allowlist", params={"token": "secret"}, json={"handle": "  "}
+        )
+    assert response.status_code == 400
+    assert "needs a handle" in response.json()["detail"]
+
+
+async def test_remove_contact_names_the_exact_entry() -> None:
+    manager = FakeConfigManager()
+    async with _client(_app(None, config=_contacts_config(), config_manager=manager)) as client:
+        response = await client.request(
+            "DELETE",
+            "/api/contacts/allowlist",
+            params={"token": "secret"},
+            json={"platform": "telegram", "handle": "@sam"},
+        )
+    assert response.status_code == 200
+    assert manager.set_calls == [
+        {
+            "op": "remove",
+            "path": "contacts.allowlist",
+            "value": {"platform": "telegram", "handle": "@sam"},
+            "source": "panel",
+        }
+    ]
+
+
+async def test_contacts_mode_round_trips_and_rejects_the_unknown() -> None:
+    manager = FakeConfigManager()
+    async with _client(_app(None, config=_contacts_config(), config_manager=manager)) as client:
+        response = await client.put(
+            "/api/contacts/mode", params={"token": "secret"}, json={"mode": "off"}
+        )
+        assert response.status_code == 200
+        bad = await client.put(
+            "/api/contacts/mode", params={"token": "secret"}, json={"mode": "strict"}
+        )
+    assert manager.set_calls == [
+        {
+            "op": "set",
+            "path": "contacts.mode",
+            "value": "off",
+            "source": "panel",
+        }
+    ]
+    assert bad.status_code == 400
+    assert bad.json()["detail"] == "it must be one of: enforce, off"
+
+
+async def test_contacts_writes_are_503_without_a_manager_wired() -> None:
+    async with _client(_app(None, config=_contacts_config())) as client:
+        for method, path in (
+            ("post", "/api/contacts/allowlist"),
+            ("delete", "/api/contacts/allowlist"),
+            ("put", "/api/contacts/mode"),
+            ("post", "/api/contacts/apps/gmail/allowlist"),
+            ("delete", "/api/contacts/apps/gmail/allowlist"),
+            ("put", "/api/contacts/apps/gmail/mode"),
+        ):
+            response = await client.request(
+                method, path, params={"token": "secret"}, json={"handle": "@x", "mode": "off"}
+            )
+            assert response.status_code == 503
+
+
+async def test_app_contacts_add_and_remove_route_to_the_app_slice() -> None:
+    manager = FakeConfigManager()
+    audit = FakeAudit()
+    async with _client(
+        _app(None, config=_contacts_config(), config_manager=manager, audit=audit)
+    ) as client:
+        add = await client.post(
+            "/api/contacts/apps/gmail/allowlist",
+            params={"token": "secret"},
+            json={"handle": "friend@example.com"},
+        )
+        await client.request(
+            "DELETE",
+            "/api/contacts/apps/discord/allowlist",
+            params={"token": "secret"},
+            json={"handle": "@friend"},
+        )
+    assert add.status_code == 200
+    # the card fixes the platform — only the handle was typed
+    assert manager.set_calls == [
+        {
+            "op": "add",
+            "path": "contacts.gmail.allowlist",
+            "value": {"platform": "gmail", "handle": "friend@example.com"},
+            "source": "panel",
+        },
+        {
+            "op": "remove",
+            "path": "contacts.discord.allowlist",
+            "value": {"platform": "discord", "handle": "@friend"},
+            "source": "panel",
+        },
+    ]
+    assert all(e["outcome"] == "changed from the panel" for e in audit.entries)
+
+
+async def test_app_contacts_mode_set_off_and_back_to_default() -> None:
+    manager = FakeConfigManager()
+    async with _client(_app(None, config=_contacts_config(), config_manager=manager)) as client:
+        off = await client.put(
+            "/api/contacts/apps/gmail/mode", params={"token": "secret"}, json={"mode": "off"}
+        )
+        back = await client.put(
+            "/api/contacts/apps/gmail/mode", params={"token": "secret"}, json={"mode": "default"}
+        )
+        bad = await client.put(
+            "/api/contacts/apps/gmail/mode", params={"token": "secret"}, json={"mode": "strict"}
+        )
+        stranger = await client.put(
+            "/api/contacts/apps/notion/mode", params={"token": "secret"}, json={"mode": "off"}
+        )
+    assert off.status_code == 200
+    assert back.status_code == 200
+    # "default" is the reset op — the app follows the section default again
+    assert manager.set_calls == [
+        {
+            "op": "set",
+            "path": "contacts.gmail.mode",
+            "value": "off",
+            "source": "panel",
+        },
+        {"op": "reset", "path": "contacts.gmail.mode", "value": None, "source": "panel"},
+    ]
+    assert bad.status_code == 400
+    assert bad.json()["detail"] == "it must be one of: enforce, off, default"
+    # an app with no allowlist section of its own can't be addressed
+    assert stranger.status_code == 404
+
+
+async def test_app_contacts_routes_are_token_guarded() -> None:
+    async with _client(_app(None, config=_contacts_config())) as client:
+        assert (
+            await client.put("/api/contacts/apps/gmail/mode", json={"mode": "off"})
+        ).status_code == 401
 
 
 # ---------------------------------------------------------------------------

@@ -104,6 +104,14 @@ class MessagingConnector:
     def enabled(self) -> bool:
         return self._enabled
 
+    async def start(self) -> None:
+        """Lifecycle contract every surface shares; a surface with nothing to
+        start up (or one stopped for config) overrides this."""
+
+    async def stop(self) -> None:
+        """The shutdown counterpart — a surface that never started is a
+        no-op, so the fanout can stop everything unconditionally."""
+
     async def _decide(self, approval_id: int, decision: str) -> Any:
         """The one shared path behind every platform's approve/deny buttons."""
         result = None

@@ -25,6 +25,7 @@ from .config import AppConfig, Settings, load_config
 from .config_store import ConfigManager, ConfigOverrides
 from .connectors import build_messaging_connectors
 from .connectors.attachments import AttachmentProcessor
+from .connectors.mail_allowlist import MailAllowlist
 from .connectors.mcp_host import MCPHost
 from .connectors.registry import ToolRegistry
 from .connectors.screenvision import ScreenVision
@@ -165,6 +166,9 @@ def create_app(
         app.state.mcp_host = host
         tools = ToolRegistry()
         tools.attach_mcp(host)
+        # the gmail allowlist rides every bulk read the namespace executes
+        mail_filter = MailAllowlist(config.contacts, audit)
+        tools.attach_mail_filter(mail_filter)
         log.info("mcp tools in the namespace: %d", tools.sync_mcp_tools())
         app.state.tools = tools
 
@@ -248,6 +252,7 @@ def create_app(
             transcript=chat_history,
             attachments=app.state.attachments,
             vectors=vectors,
+            mail_filter=mail_filter,
         )
         app.state.agent = agent
         native = register_native_tools(

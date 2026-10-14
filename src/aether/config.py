@@ -131,6 +131,25 @@ class ContactRule(BaseModel):
     handle: str
 
 
+class AppContacts(BaseModel):
+    """One app's own slice of the allowlist: its list of people, and a
+    switch that either overrides the default or follows it (None)."""
+
+    mode: Literal["enforce", "off"] | None = None
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def _coerce_yaml_bool(cls, v: object) -> object:
+        # the same YAML 1.1 bare-boolean trap as the section default
+        if v is False:
+            return "off"
+        if v is True:
+            return "enforce"
+        return v
+
+    allowlist: list[ContactRule] = Field(default_factory=list)
+
+
 class ContactsConfig(BaseModel):
     # YAML 1.1 parses bare `off`/`on` as booleans — coerce the traps so both
     # spellings of a user's config.yaml work.
@@ -145,7 +164,15 @@ class ContactsConfig(BaseModel):
             return "enforce"
         return v
 
+    # the cross-app ("Any platform") bucket — a rule here counts everywhere
     allowlist: list[ContactRule] = Field(default_factory=list)
+
+    # each connected app's own people, consulted alongside the bucket above;
+    # a None mode means the app follows the section default
+    gmail: AppContacts = Field(default_factory=AppContacts)
+    telegram: AppContacts = Field(default_factory=AppContacts)
+    discord: AppContacts = Field(default_factory=AppContacts)
+    slack: AppContacts = Field(default_factory=AppContacts)
 
 
 class AuthzRule(BaseModel):

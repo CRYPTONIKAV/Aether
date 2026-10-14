@@ -38,6 +38,7 @@ from . import restart
 from .authz.policy import Policy, PolicyError
 from .config import (
     AppConfig,
+    AppContacts,
     AuthzRule,
     ContactRule,
     MCPServerConfig,
@@ -61,6 +62,18 @@ _APPLY_NOTES = {
     "contacts.mode": " — applies to the next message I see",
     "contacts.allowlist": " — applies to the next message I see",
 }
+
+
+def _apply_note(path: str) -> str:
+    """The note for one canonical path — the table first, then the per-app
+    contacts paths, which share one note (the enforcement reads the config
+    on every message and every read)."""
+    if path in _APPLY_NOTES:
+        return _APPLY_NOTES[path]
+    if path.startswith("contacts."):
+        return " — applies to the next message I see"
+    return ""
+
 
 _SECTION_NAMES = ("llm", "agent", "salience", "messaging", "contacts", "authz", "mcp_servers")
 
@@ -304,13 +317,23 @@ class ConfigManager:
         words the model relays. For op=set the callers guarantee a value is
         present (`value=None` means an explicit clear); add/remove pass the
         entry tokens or object in `value`; reset ignores it."""
+        _, text = await self.set_verdict(op=op, path=path, value=value, source=source)
+        return text
+
+    async def set_verdict(
+        self, *, op: str, path: str, value: Any = None, source: str = "chat"
+    ) -> tuple[bool, str]:
+        """The same one change with the verdict kept: True plus the
+        confirmation when it landed, False plus the plain words when it was
+        refused or failed. The panel's edit paths need the verdict (a 400
+        vs a refreshed list); chat's callers only ever relay the words."""
         try:
-            return await self._set(op, path.strip(), value, source)
+            return True, await self._set(op, path.strip(), value, source)
         except ConfigError as exc:
-            return str(exc)
+            return False, str(exc)
         except Exception:
             log.exception("config %s %s failed", op, path)
-            return "that didn't work — nothing was changed."
+            return False, "that didn't work — nothing was changed."
 
     async def _set(self, op: str, raw_path: str, value: Any, source: str) -> str:
         if op not in ("set", "add", "remove", "reset"):
@@ -335,7 +358,7 @@ class ConfigManager:
             # names that left the list take their item rows with them
             await self._forget_gone_mcp_rows(old_entries, validated)
         self._mutate(resolved, validated)
-        note = await self._hooks(resolved) or _APPLY_NOTES.get(resolved.canonical, "")
+        note = await self._hooks(resolved) or _apply_note(resolved.canonical)
         log.info("config %s set from %s", resolved.canonical, source)
         return self._confirm_set(resolved, validated) + note
 
@@ -363,7 +386,7 @@ class ConfigManager:
             base_value = getattr(resolved.base_container, resolved.field)
             setattr(resolved.container, resolved.field, base_value)
             body = f"{path} reset to config.yaml ({_plain_value(base_value)})."
-        note = await self._hooks(resolved) or _APPLY_NOTES.get(path, "")
+        note = await self._hooks(resolved) or _apply_note(path)
         return body + note
 
     async def _mutate_list(self, resolved: _Resolved, op: str, value: Any) -> str:
@@ -391,7 +414,7 @@ class ConfigManager:
         if resolved.root == "mcp_servers":
             await self._forget_gone_mcp_rows(current, new_entries)
         getattr(resolved.container, resolved.field)[:] = new_entries
-        note = await self._hooks(resolved) or _APPLY_NOTES.get(resolved.canonical, "")
+        note = await self._hooks(resolved) or _apply_note(resolved.canonical)
         base_count = len(getattr(resolved.base_container, resolved.field))
         return (
             f"{resolved.canonical} updated — {len(new_entries)} entries now "
@@ -477,7 +500,9 @@ class ConfigManager:
                 )
             note = tokens[2].strip() if len(tokens) == 3 else ""
             try:
-                entry = AuthzRule(tool_pattern=tokens[0], decision=tokens[1].lower(), note=note)
+                entry = AuthzRule.model_validate(
+                    {"tool_pattern": tokens[0], "decision": tokens[1].lower(), "note": note}
+                )
             except ValidationError as exc:
                 raise ConfigError(_plain_validation_error(exc, "the authz rule")) from exc
         else:
@@ -545,6 +570,8 @@ class ConfigManager:
             if resolved.root == "authz":
                 # same refusal as _authz_rules_change, for the JSON-array path
                 for rule in entries:
+                    if not isinstance(rule, AuthzRule):
+                        continue  # the adapter was built from AuthzRule — anything else is impossible
                     try:
                         re.compile(rule.tool_pattern)
                         if rule.param_pattern:
@@ -685,7 +712,9 @@ class ConfigManager:
             value = await self._resolver.resolve(field.upper())
             if value:
                 values[field] = value
-        return Settings(_env_file=None, **values)
+        # _env_file=None is load-bearing (read the resolver, not .env) but
+        # isn't in BaseSettings' typed signature — pydantic-settings takes it
+        return Settings(_env_file=None, **values)  # type: ignore[call-arg]
 
     async def _apply_mcp(self) -> str:
         """Make the host match the list: stop what left or changed, start
@@ -794,6 +823,34 @@ class ConfigManager:
                 "e.g. messaging.telegram.enabled."
             )
 
+        if root == "contacts" and len(rest) == 2:
+            # the per-app slices: contacts.<app>.mode / contacts.<app>.allowlist
+            app = {n.lower(): n for n in type(self._live.contacts).model_fields}.get(
+                rest[0].lower()
+            )
+            if app is None or not isinstance(getattr(self._live.contacts, app), AppContacts):
+                raise ConfigError(
+                    "contacts paths are contacts.<setting>, or one app's own "
+                    "contacts.<app>.mode / contacts.<app>.allowlist — e.g. "
+                    "contacts.gmail.allowlist."
+                )
+            section = getattr(self._live.contacts, app)
+            field = {n.lower(): n for n in AppContacts.model_fields}.get(rest[1].lower())
+            if field is None:
+                raise ConfigError(
+                    f"{path.strip()!r} isn't a setting I know{self._suggest(path.strip())}"
+                )
+            return _Resolved(
+                root,
+                section,
+                field,
+                "list" if field == "allowlist" else "scalar",
+                AppContacts,
+                ContactRule if field == "allowlist" else None,
+                getattr(self._base.contacts, app),
+                f"contacts.{app}.{field}",
+            )
+
         if len(rest) != 1:
             raise ConfigError(
                 f"{path.strip()!r} isn't a setting I know{self._suggest(path.strip())}"
@@ -853,7 +910,14 @@ class ConfigManager:
             ("contacts", type(self._live.contacts)),
             ("authz", type(self._live.authz)),
         ):
-            paths.extend(f"{section_name}.{field}" for field in model.model_fields)
+            for field in model.model_fields:
+                if section_name == "contacts" and isinstance(
+                    getattr(self._live.contacts, field), AppContacts
+                ):
+                    # one app's slice is two settings of its own, not a blob
+                    paths.extend((f"contacts.{field}.mode", f"contacts.{field}.allowlist"))
+                else:
+                    paths.append(f"{section_name}.{field}")
         paths.extend(
             f"messaging.{platform}.enabled" for platform in type(self._live.messaging).model_fields
         )
@@ -953,7 +1017,13 @@ class ConfigManager:
                 if c.allowlist
                 else " · everyone can reach me"
             )
-            return f"contacts: allowlist {c.mode}{senders}"
+            apps = [
+                f"{app} {s.mode or 'default'} ({len(s.allowlist)})"
+                for app in ("gmail", "telegram", "discord", "slack")
+                if (s := getattr(c, app)) is not None and (s.mode is not None or s.allowlist)
+            ]
+            own = f" · own lists: {', '.join(apps)}" if apps else ""
+            return f"contacts: allowlist {c.mode}{senders}{own}"
         if name == "authz":
             a = live.authz
             plural = "rule" if len(a.rules) == 1 else "rules"
@@ -988,6 +1058,11 @@ class ConfigManager:
             if isinstance(live_v, list):
                 lines.append(f"  {field}: {len(live_v)} entries")
                 lines.extend(f"    {_plain_entry(e)}" for e in live_v)
+            elif isinstance(live_v, AppContacts):
+                # one app's own slice: its switch in plain words, its people under it
+                marker = " (changed from config.yaml)" if live_v != base_v else ""
+                lines.append(f"  {field}: {live_v.mode or 'follows the default'}{marker}")
+                lines.extend(f"    {_plain_entry(e)}" for e in live_v.allowlist)
             else:
                 marker = " (changed from config.yaml)" if live_v != base_v else ""
                 lines.append(f"  {field} = {_plain_value(live_v)}{marker}")

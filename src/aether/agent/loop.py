@@ -46,6 +46,7 @@ from ..connectors.base import (
     MessagingConnector,
     UnknownToolError,
 )
+from ..connectors.mail_allowlist import MailAllowlist
 from ..connectors.mcp_host import MCPHost
 from ..connectors.registry import ToolRegistry
 from ..llm.agent import run_tool_loop
@@ -358,6 +359,7 @@ class AgentLoop:
         transcript: Any = None,
         attachments: AttachmentProcessor | None = None,
         vectors: VectorMemory | None = None,
+        mail_filter: MailAllowlist | None = None,
     ) -> None:
         self._providers = providers
         self._tools = tools
@@ -391,6 +393,9 @@ class AgentLoop:
         # is semantic and automatic; a missing embedder means no recall,
         # and memory_search says the plain failure message
         self._vectors = vectors
+        # the gmail allowlist, filtering bulk reads the poll path takes
+        # straight off the host — bypassing the registry's choke point
+        self._mail_filter = mail_filter
         # the guided /config walk in progress, if any — memory only
         self._wizard: ConfigWizard | None = None
         # the guided /apps walk in progress, if any — same rules, memory only
@@ -1073,6 +1078,10 @@ class AgentLoop:
             if server in self._down:
                 self._down.discard(server)
                 await self._notify(f"{server} is responding again.")
+            # the poll path calls the host directly — the registry's mail
+            # filter never sees it — so the same allowlist rides here
+            if self._mail_filter is not None:
+                result = await self._mail_filter.filter_result(qualified, result)
             await self._audit.append(
                 actor="scheduler",
                 tool_name=qualified,

@@ -42,6 +42,7 @@ export const OUTCOME_LABELS = {
   "executed after approval": "Completed after your approval",
   "could not run after approval": "Could not run after approval",
   "approval expired": "Expired without a decision",
+  "changed from the panel": "You made this change from the panel",
   "stored encrypted — value never recorded": "Saved an app key (value not recorded)",
   "entity note added": "Saved a note about someone",
   "identities merged": "Recognised two accounts as one person",
@@ -116,6 +117,7 @@ const APP_NAMES = {
   calendar: "Calendar", gcal: "Calendar",
   slack: "Slack", telegram: "Telegram", discord: "Discord", whatsapp: "WhatsApp", teams: "Teams",
   github: "GitHub", drive: "Files", filesystem: "Files", fs: "Files",
+  phone: "Phone (SMS)", sms: "Phone (SMS)", call: "Phone call",
   memory: "Aether's memory",
 };
 
@@ -166,6 +168,13 @@ export function appLabel(source) {
   if (!source) return "";
   const key = String(source).toLowerCase();
   return APP_NAMES[key] || EXTRA_SOURCES[key] || key[0].toUpperCase() + key.slice(1);
+}
+
+// a contact rule's platform — "*" is the platform-agnostic entry, never a
+// bare asterisk on the screen
+export function platformLabel(platform) {
+  if (!platform || platform === "*") return "Any platform";
+  return appLabel(platform);
 }
 
 export function describeTool(name) {
