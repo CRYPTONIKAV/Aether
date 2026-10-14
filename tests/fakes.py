@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from aether.agent.traces import Trace
 from aether.authz.approvals import PENDING, Approval
@@ -766,6 +767,7 @@ class FakeComposioBridge:
         accounts: list | None = None,
         available: bool = True,
         authorize_url: str = "https://hub.example.test/connect",
+        authorize_error: Exception | None = None,
         wait_error: Exception | None = None,
     ) -> None:
         from aether.composio_bridge import ToolkitInfo
@@ -786,6 +788,7 @@ class FakeComposioBridge:
         self.account_list = list(accounts or [])
         self._available = available
         self._authorize_url = authorize_url
+        self._authorize_error = authorize_error
         self._wait_error = wait_error
         self.authorized: list[str] = []
         self.disconnected: list[str] = []
@@ -822,6 +825,8 @@ class FakeComposioBridge:
 
         if not self._available:
             raise ComposioNotConfigured("no key in the fake")
+        if self._authorize_error is not None:
+            raise self._authorize_error
         self.authorized.append(toolkit)
         self._requests += 1
         return f"req-{self._requests}", f"{self._authorize_url}/{toolkit}"
@@ -847,3 +852,60 @@ class FakeComposioBridge:
                 self.disconnected.append(account_id)
                 return app
         return None
+
+
+class FakeSecretStore:
+    """SecretStore double: in-memory dict, the get/set/names surface so
+    connector and bridge tests run with no database."""
+
+    def __init__(self, secrets: dict[str, str] | None = None) -> None:
+        self.secrets = dict(secrets or {})
+
+    async def get(self, name: str) -> str | None:
+        return self.secrets.get(name)
+
+    async def set(self, name: str, value: str) -> None:
+        self.secrets[name] = value
+
+    async def names(self) -> set[str]:
+        return set(self.secrets)
+
+
+class FakeComposioSession:
+    """Composio session double: records allowlist updates and authorize
+    calls, answers canned requests or errors — no Composio SDK, no network."""
+
+    def __init__(
+        self,
+        *,
+        authorize_result: object | None = None,
+        authorize_error: Exception | None = None,
+        update_error: Exception | None = None,
+        session_id: str = "fake-session-id",
+        mcp_url: str = "https://mcp.composio.dev/fake",
+        mcp_key: str = "fake-mcp-key",
+    ) -> None:
+        self.session_id = session_id
+        self.mcp = type("MCP", (), {"url": mcp_url, "headers": {"x-api-key": mcp_key}})()
+        self.authorize_result = authorize_result
+        self.authorize_error = authorize_error
+        self.update_error = update_error
+        self.update_calls: list[dict[str, Any]] = []
+        self.authorize_calls: list[str] = []
+
+    def update(self, **kwargs: Any) -> None:
+        self.update_calls.append(kwargs)
+        if self.update_error is not None:
+            raise self.update_error
+
+    def authorize(self, toolkit: str) -> Any:
+        self.authorize_calls.append(toolkit)
+        if self.authorize_error is not None:
+            raise self.authorize_error
+        if self.authorize_result is not None:
+            return self.authorize_result
+        return type(
+            "Request",
+            (),
+            {"id": f"req-{toolkit}", "redirect_url": f"https://hub.example.test/{toolkit}"},
+        )()

@@ -172,9 +172,16 @@ class ComposioBridge:
         if not await self.ensure():
             raise ComposioNotConfigured(f"no {API_KEY_NAME} set")
         await self._sync_toolkits(extra=toolkit)
-        request = await asyncio.to_thread(self._session.authorize, toolkit)
-        if not request.redirect_url:
-            raise ComposioUnavailable(f"composio gave no connect link for {toolkit}")
+        try:
+            request = await asyncio.to_thread(self._session.authorize, toolkit)
+            if not request.redirect_url:
+                raise ComposioUnavailable(f"composio gave no connect link for {toolkit}")
+        except Exception:
+            # session.authorize failed or returned no link — drop the toolkit
+            # authorize() pre-admitted, or the session keeps listing tools
+            # for an app that never connected
+            await self._rollback_toolkits()
+            raise
         return request.id, request.redirect_url
 
     async def wait_and_enable(
@@ -195,10 +202,7 @@ class ComposioBridge:
             # the link was abandoned or failed — drop the toolkit
             # authorize() pre-admitted, or the session keeps listing tools
             # for an app that never connected
-            try:
-                await self._sync_toolkits()
-            except Exception:
-                log.warning("composio rollback sync failed", exc_info=True)
+            await self._rollback_toolkits()
             raise
         await self._sync_toolkits()
         return self._to_app(connection)
@@ -360,6 +364,13 @@ class ComposioBridge:
         await self._secrets.set(_SESSION_ID_NAME, session.session_id)
         await self._secrets.set(MCP_URL_NAME, session.mcp.url)
         await self._secrets.set(MCP_KEY_NAME, key)
+
+    async def _rollback_toolkits(self) -> None:
+        """Drop any un-connected toolkits pre-admitted into the session allowlist."""
+        try:
+            await self._sync_toolkits()
+        except Exception:
+            log.warning("composio rollback sync failed", exc_info=True)
 
     async def _sync_toolkits(self, extra: str | None = None) -> None:
         """The session's allowlist mirrors what's connected — connect grows
