@@ -1,7 +1,7 @@
 import Icon from "./Icon.jsx";
 import { assetUrl, ASSET_V } from "../lib/assets.js";
 
-// The nine routes in their original order. The attention count is a plain
+// The routes in their original order. The attention count is a plain
 // number — no badge, no dot, no fill.
 const NAV_ITEMS = [
   ["activity", "Live Activity"],
@@ -12,6 +12,7 @@ const NAV_ITEMS = [
   ["traces", "Decision Traces"],
   ["policy", "Authorization & Policies"],
   ["apps", "Apps & Permissions"],
+  ["contacts", "Contacts"],
   ["settings", "Settings"],
 ];
 

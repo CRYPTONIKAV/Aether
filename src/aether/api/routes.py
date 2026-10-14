@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hmac
 import logging
+from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel
@@ -40,6 +41,15 @@ class PersonalityBody(BaseModel):
 
 class WorkspaceTextBody(BaseModel):
     text: str
+
+
+class ContactBody(BaseModel):
+    platform: str = "*"  # "*" matches the handle on any platform
+    handle: str = ""
+
+
+class ContactModeBody(BaseModel):
+    mode: str = ""  # "enforce" | "off" — checked by hand for a plain 400
 
 
 @router.post("/api/screen-capture", status_code=202)
@@ -85,7 +95,9 @@ async def take_screen_request(request: Request, token: str | None = None) -> dic
         raise HTTPException(status_code=503, detail="capture requests not wired")
     note = box.take()
     if note is None:
-        return Response(status_code=204)  # nothing asked for — poll again later
+        # nothing asked for — poll again. The dict annotation is FastAPI's
+        # response model; the 204 is the one place the two disagree.
+        return Response(status_code=204)  # type: ignore[return-value] later
     return {"note": note}
 
 
@@ -236,6 +248,204 @@ async def config_feed(request: Request, token: str | None = None) -> dict:
     if manager is None:
         raise HTTPException(status_code=503, detail="config management is not wired")
     return await manager.effective()
+
+
+# -- the contact allowlist: the panel's one config edit surface ------------------
+#
+# Who may reach Aether is the one setting the panel writes directly — the
+# owner tapping their own authenticated panel IS the approval. Every write
+# still lands through the ConfigManager (validated, persisted, live on the
+# next message) and leaves an audit row, so the list can never drift from
+# what chat's /config would have produced.
+
+
+async def _contacts_state(request: Request) -> dict:
+    """The live contacts config, plus the per-app view the page renders:
+    one entry per app that is connected (Composio account or enabled
+    messaging toggle) or that carries its own list or switch. Each app's
+    shown list merges its own slice with any same-platform strays from the
+    cross-app bucket, every entry tagged with the list it lives in so
+    Remove targets the right one."""
+    contacts = request.app.state.config.contacts
+    # connected apps: the Composio accounts (lean call — never toolkits())
+    # plus the enabled messaging toggles; an app with its own list or
+    # switch shows even when disconnected, so nothing configured hides
+    connected: set[str] = set()
+    bridge = getattr(request.app.state, "composio", None)
+    if bridge is not None and await bridge.available():
+        for account in await bridge.accounts():
+            key = account.toolkit.lower()
+            if key in type(contacts).model_fields:
+                connected.add(key)
+    messaging = request.app.state.config.messaging
+    connected |= {p for p in ("telegram", "discord", "slack") if getattr(messaging, p).enabled}
+
+    apps: list[dict] = []
+    for key in ("gmail", "telegram", "discord", "slack"):
+        section = getattr(contacts, key)
+        if key not in connected and section.mode is None and not section.allowlist:
+            continue
+        entries = [
+            {"platform": r.platform, "handle": r.handle, "list": "app"} for r in section.allowlist
+        ] + [
+            {"platform": r.platform, "handle": r.handle, "list": "any"}
+            for r in contacts.allowlist
+            if r.platform == key
+        ]
+        apps.append(
+            {
+                "key": key,
+                "connected": key in connected,
+                "mode": section.mode,
+                "allowlist": entries,
+            }
+        )
+    return {
+        "mode": contacts.mode,
+        "allowlist": [{"platform": r.platform, "handle": r.handle} for r in contacts.allowlist],
+        "apps": apps,
+    }
+
+
+async def _panel_config_write(request: Request, *, op: str, path: str, value: Any) -> dict:
+    """One owner-made config change from the panel: refuse with plain words
+    when the manager won't take it, record the landing in the audit chain,
+    and answer with the fresh state so the page updates in one round-trip."""
+    manager = getattr(request.app.state, "config_manager", None)
+    if manager is None:
+        raise HTTPException(status_code=503, detail="config management is not wired")
+    ok, note = await manager.set_verdict(op=op, path=path, value=value, source="panel")
+    if not ok:
+        raise HTTPException(status_code=400, detail=note)
+    audit = getattr(request.app.state, "audit", None)
+    if audit is not None:
+        await audit.append(
+            actor="owner",
+            tool_name="set_config",
+            decision="allow",
+            params={"path": path, "op": op},
+            outcome="changed from the panel",
+        )
+    return await _contacts_state(request)
+
+
+@router.get("/api/contacts")
+async def contacts_feed(request: Request, token: str | None = None) -> dict:
+    """The live allowlist and its mode — the same list chat's /config edits,
+    read here for the Contacts page."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    return await _contacts_state(request)
+
+
+@router.post("/api/contacts/allowlist")
+async def add_contact(body: ContactBody, request: Request, token: str | None = None) -> dict:
+    """Allow one more person — the same write '/config add
+    contacts.allowlist' makes, just typed into the panel."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    handle = body.handle.strip()
+    if not handle:
+        raise HTTPException(status_code=400, detail="an allowlist entry needs a handle")
+    return await _panel_config_write(
+        request,
+        op="add",
+        path="contacts.allowlist",
+        value={"platform": body.platform.strip() or "*", "handle": handle},
+    )
+
+
+@router.delete("/api/contacts/allowlist")
+async def remove_contact(body: ContactBody, request: Request, token: str | None = None) -> dict:
+    """Take one person off the list — the platform and handle must name the
+    exact entry shown, the same way '/config remove' does."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    return await _panel_config_write(
+        request,
+        op="remove",
+        path="contacts.allowlist",
+        value={"platform": body.platform.strip() or "*", "handle": body.handle.strip()},
+    )
+
+
+@router.put("/api/contacts/mode")
+async def set_contacts_mode(
+    body: ContactModeBody, request: Request, token: str | None = None
+) -> dict:
+    """Switch between 'only the allowlist' (enforce) and 'everyone' (off) —
+    applies to the next message Aether sees, exactly as the chat path does."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    if body.mode not in ("enforce", "off"):
+        raise HTTPException(status_code=400, detail="it must be one of: enforce, off")
+    return await _panel_config_write(request, op="set", path="contacts.mode", value=body.mode)
+
+
+def _app_contacts_path(key: str, setting: str) -> str:
+    """The manager path for one app's own slice — the key must name an app
+    the config model knows, so a stranger in the URL can't mint paths."""
+    if key.lower() not in ("gmail", "telegram", "discord", "slack"):
+        raise HTTPException(status_code=404, detail="no app with its own allowlist is named that")
+    return f"contacts.{key.lower()}.{setting}"
+
+
+@router.put("/api/contacts/apps/{key}/mode")
+async def set_app_contacts_mode(
+    key: str, body: ContactModeBody, request: Request, token: str | None = None
+) -> dict:
+    """One app's own switch: 'only its list' (enforce), 'everyone' (off), or
+    'default' — back to following the section default, the same reset
+    '/config reset contacts.gmail.mode' makes."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    path = _app_contacts_path(key, "mode")
+    if body.mode == "default":
+        return await _panel_config_write(request, op="reset", path=path, value=None)
+    if body.mode not in ("enforce", "off"):
+        raise HTTPException(status_code=400, detail="it must be one of: enforce, off, default")
+    return await _panel_config_write(request, op="set", path=path, value=body.mode)
+
+
+@router.post("/api/contacts/apps/{key}/allowlist")
+async def add_app_contact(
+    key: str, body: ContactBody, request: Request, token: str | None = None
+) -> dict:
+    """Allow one more person on this app's own list — the card fixes the
+    platform, so only the handle is typed."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    handle = body.handle.strip()
+    if not handle:
+        raise HTTPException(status_code=400, detail="an allowlist entry needs a handle")
+    return await _panel_config_write(
+        request,
+        op="add",
+        path=_app_contacts_path(key, "allowlist"),
+        value={"platform": key.lower(), "handle": handle},
+    )
+
+
+@router.delete("/api/contacts/apps/{key}/allowlist")
+async def remove_app_contact(
+    key: str, body: ContactBody, request: Request, token: str | None = None
+) -> dict:
+    """Take one person off this app's own list — the entry must live in
+    this app's slice, exactly as the card showed it."""
+    if not _authorized(request, token):
+        raise HTTPException(status_code=401, detail="bad or missing token")
+    # the entry's own platform as the card showed it; the app key is the
+    # fallback so a starry default can't miss the slice the row lives in
+    platform = body.platform.strip()
+    return await _panel_config_write(
+        request,
+        op="remove",
+        path=_app_contacts_path(key, "allowlist"),
+        value={
+            "platform": platform if platform not in ("", "*") else key.lower(),
+            "handle": body.handle.strip(),
+        },
+    )
 
 
 @router.get("/api/settings/personality")

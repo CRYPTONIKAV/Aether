@@ -380,6 +380,143 @@ async def test_allowlist_add_remove_in_plain_tokens() -> None:
     )
 
 
+# -- per-app contacts: one list and one switch per app ----------------------------
+
+
+async def test_per_app_mode_sets_and_resets_like_any_setting() -> None:
+    manager, store, live = _manager()
+
+    reply = await manager.set(op="set", path="contacts.gmail.mode", value="enforce")
+    assert reply == (
+        "contacts.gmail.mode set to enforce (config.yaml says none). "
+        "— applies to the next message I see"
+    )
+    assert live.contacts.gmail.mode == "enforce"
+    assert store.rows == {"contacts.gmail.mode": "enforce"}
+    # the cross-app default is untouched — the app's switch is its own
+    assert live.contacts.mode == "off"
+
+    reply = await manager.set(op="reset", path="contacts.gmail.mode")
+    assert reply == (
+        "contacts.gmail.mode reset to config.yaml (none). — applies to the next message I see"
+    )
+    assert live.contacts.gmail.mode is None
+    assert store.rows == {}
+
+    reply = await manager.set(op="set", path="contacts.discord.mode", value="off")
+    assert reply == (
+        "contacts.discord.mode set to off (config.yaml says none). — applies to the next message I see"
+    )
+    assert live.contacts.discord.mode == "off"
+
+    # a mode the vocabulary doesn't know refuses and persists nothing
+    reply = await manager.set(op="set", path="contacts.gmail.mode", value="strict")
+    assert "contacts.gmail.mode can't be 'strict' — it must be one of" in reply
+    assert store.rows == {"contacts.discord.mode": "off"}
+
+
+async def test_per_app_allowlist_add_and_remove_in_plain_tokens() -> None:
+    manager, store, live = _manager()
+
+    reply = await manager.set(op="add", path="contacts.gmail.allowlist", value="abc123@xyz.com")
+    assert reply == (
+        "contacts.gmail.allowlist updated — 1 entries now (config.yaml has 0). "
+        "— applies to the next message I see"
+    )
+    assert live.contacts.gmail.allowlist == [ContactRule(handle="abc123@xyz.com")]
+    assert store.rows == {
+        "contacts.gmail.allowlist": [{"platform": "*", "handle": "abc123@xyz.com"}]
+    }
+    # the cross-app bucket and the other apps stay untouched
+    assert live.contacts.allowlist == []
+    assert live.contacts.telegram.allowlist == []
+
+    assert await manager.set(op="add", path="contacts.gmail.allowlist", value="abc123@xyz.com") == (
+        "*/abc123@xyz.com is already on the allowlist."
+    )
+    await manager.set(op="add", path="contacts.gmail.allowlist", value="gmail dhak3212@hdh.com")
+    assert live.contacts.gmail.allowlist == [
+        ContactRule(handle="abc123@xyz.com"),
+        ContactRule(platform="gmail", handle="dhak3212@hdh.com"),
+    ]
+
+    await manager.set(op="remove", path="contacts.gmail.allowlist", value="abc123@xyz.com")
+    assert live.contacts.gmail.allowlist == [
+        ContactRule(platform="gmail", handle="dhak3212@hdh.com")
+    ]
+    assert (
+        await manager.set(op="remove", path="contacts.gmail.allowlist", value="abc123@xyz.com")
+        == "abc123@xyz.com isn't on the allowlist."
+    )
+
+    reply = await manager.set(op="reset", path="contacts.gmail.allowlist")
+    assert reply == (
+        "contacts.gmail.allowlist reset to config.yaml (0 entries). "
+        "— applies to the next message I see"
+    )
+    assert live.contacts.gmail.allowlist == []
+    assert store.rows == {}
+
+
+async def test_per_app_paths_refuse_unknown_apps_and_fields_in_plain_words() -> None:
+    manager, store, _ = _manager()
+
+    assert await manager.set(op="set", path="contacts.notion.mode", value="enforce") == (
+        "contacts paths are contacts.<setting>, or one app's own "
+        "contacts.<app>.mode / contacts.<app>.allowlist — e.g. contacts.gmail.allowlist."
+    )
+    # contacts.allowlist is a real setting, not an app — a nested path under it
+    # is the same refusal, not a crash
+    assert await manager.set(op="set", path="contacts.allowlist.gmail", value="x") == (
+        "contacts paths are contacts.<setting>, or one app's own "
+        "contacts.<app>.mode / contacts.<app>.allowlist — e.g. contacts.gmail.allowlist."
+    )
+    reply = await manager.set(op="set", path="contacts.gmail.subjects", value="x")
+    assert "'contacts.gmail.subjects' isn't a setting I know" in reply
+    assert store.rows == {}
+
+
+async def test_show_renders_the_app_slices_in_plain_words() -> None:
+    manager, _, _ = _manager()
+    await manager.set(op="set", path="contacts.mode", value="enforce")
+    await manager.set(op="add", path="contacts.allowlist", value="@sam")
+    await manager.set(op="set", path="contacts.gmail.mode", value="off")
+    await manager.set(op="add", path="contacts.telegram.allowlist", value="@priya")
+
+    # the overview names each app that has its own list or switch — no raw None,
+    # no pydantic dump
+    overview = await manager.show()
+    assert "own lists: gmail off (0), telegram default (1)" in overview
+    assert "Changed from config.yaml: contacts.mode = enforce · contacts.allowlist = 1 entries" in (
+        overview
+    )
+    assert "· contacts.gmail.mode = off" in overview
+    assert "· contacts.telegram.allowlist = 1 entries" in overview
+
+    section = await manager.show("contacts")
+    assert "  gmail: off (changed from config.yaml)" in section
+    assert "  telegram: follows the default (changed from config.yaml)" in section
+    assert "    */@priya" in section
+    assert "  discord: follows the default\n" in section
+    # no raw model ever reaches the words
+    assert "AppContacts" not in section and "mode=None" not in section
+
+    assert await manager.show("contacts.gmail.mode") == (
+        "contacts.gmail.mode = off (changed from config.yaml, which says none)"
+    )
+
+
+async def test_yaml_value_of_an_app_slice_reads_the_base_app() -> None:
+    live = AppConfig(contacts={"gmail": {"allowlist": [ContactRule(handle="abc123@xyz.com")]}})
+    manager, _, _ = _manager(live=live)
+
+    await manager.set(op="add", path="contacts.gmail.allowlist", value="dhak3212@hdh.com")
+    base = manager.yaml_value("contacts.gmail.allowlist")
+    assert [r.handle for r in base] == ["abc123@xyz.com"]  # yaml's entry, still
+    await manager.set(op="reset", path="contacts.gmail.allowlist")
+    assert [r.handle for r in manager.yaml_value("contacts.gmail.allowlist")] == ["abc123@xyz.com"]
+
+
 async def test_authz_rules_add_remove_and_regex_refusals() -> None:
     manager, store, live = _manager()
 

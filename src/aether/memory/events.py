@@ -57,19 +57,26 @@ def _bare(handle: str) -> str:
     return h.lstrip("@")
 
 
-def is_allowlisted(contacts: ContactsConfig, sender: Sender | None) -> bool:
-    """The user decides which contacts the agent may see.
+def is_allowlisted(contacts: ContactsConfig, app: str, sender: Sender | None) -> bool:
+    """The user decides which contacts the agent may see, per app.
 
-    mode "off" sees everything. A senderless event (scheduler ticks, screen
-    captures, internal observations) can't be filtered. A sender matches a
-    rule when their normalized handles agree, or — for platform-agnostic
-    ("*") rules — when the bare handle agrees across platforms.
+    Each app's effective mode is its own switch when it sets one, else the
+    section default. "off" sees everything. A senderless event (scheduler
+    ticks, screen captures, internal observations) can't be filtered. A
+    sender matches a rule from the app's own list or the cross-app bucket
+    when their normalized handles agree, or — for platform-agnostic ("*")
+    rules — when the bare handle agrees across platforms.
     """
-    if contacts.mode != "enforce" or sender is None:
+    section = getattr(contacts, app, None)  # AppContacts for every known app key
+    mode = section.mode if section is not None and section.mode is not None else contacts.mode
+    if mode != "enforce" or sender is None:
         return True
+    rules = list(contacts.allowlist)
+    if section is not None:
+        rules += section.allowlist
     sender_norm = normalize_handle(sender.platform, sender.handle)
     sender_bare = _bare(sender.handle)
-    for rule in contacts.allowlist:
+    for rule in rules:
         if normalize_handle(rule.platform, rule.handle) == sender_norm:
             return True
         if rule.platform == "*" and sender_bare and _bare(rule.handle) == sender_bare:
@@ -128,7 +135,7 @@ class EventStore:
         occurred_at: datetime | None = None,
         meta: dict[str, Any] | None = None,
     ) -> IngestResult:
-        if not is_allowlisted(self._contacts, sender):
+        if sender is not None and not is_allowlisted(self._contacts, sender.platform, sender):
             await self._audit.append(
                 actor="system",
                 tool_name=f"ingest:{source}",

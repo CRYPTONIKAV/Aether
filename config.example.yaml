@@ -62,10 +62,29 @@ messaging:
   slack: {enabled: false}
 
 contacts:
-  mode: "off"                    # "enforce" = agent sees only allowlisted senders
-  allowlist: []
+  mode: "off"                    # the default every app follows:
+                                 #   "enforce" = agent sees only allowlisted senders
+  allowlist: []                  # the "any platform" bucket — counts on every app
     # - {platform: telegram, handle: "@you"}
     # - {platform: "*", handle: "friend@example.com"}
+  # each connected app can carry its own list and its own switch; a missing
+  # mode (or "default") follows the section default above. Gmail's list also
+  # decides which inbox mail the agent may read — from allowlisted people,
+  # mail you sent them, and mail you sent yourself; everything else is
+  # dropped before the agent ever sees it.
+  gmail:
+    mode: null                   # null = follow the default; "enforce" | "off"
+    allowlist: []
+      # - {platform: gmail, handle: "friend@example.com"}
+  telegram:
+    mode: null
+    allowlist: []
+  discord:
+    mode: null
+    allowlist: []
+  slack:
+    mode: null
+    allowlist: []
 
 authz:
   rules: []                      # evaluated before built-in risk rules

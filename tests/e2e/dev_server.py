@@ -27,8 +27,11 @@ from aether.chat.ws import router as chat_router
 from aether.composio_bridge import ConnectedApp, ToolkitInfo
 from aether.config import (
     AppConfig,
+    AppContacts,
     AuthzConfig,
     AuthzRule,
+    ContactRule,
+    ContactsConfig,
     MCPServerConfig,
     MessagingConfig,
     PlatformToggle,
@@ -42,6 +45,9 @@ from aether.scheduler.jobs import ScheduledAction
 
 WEB_DIR = Path(__file__).resolve().parents[2] / "src" / "aether" / "web"
 API_TOKEN = "secret"
+
+# the apps that carry their own contacts slice, matching the config model
+_APPS_WITH_OWN_LISTS = ("gmail", "telegram", "discord", "slack")
 
 
 class FakeApprovals:
@@ -166,6 +172,32 @@ class FakeAudit:
 
     async def recent(self, limit: int = 100) -> list[dict]:
         return list(reversed(self.rows))[:limit]  # newest first, matching the real AuditLog
+
+    async def append(
+        self,
+        *,
+        actor: str,
+        tool_name: str,
+        decision: str,
+        rules_matched: str = "",
+        params: dict | None = None,
+        outcome: str = "",
+    ) -> int:
+        # the Contacts page's writes land here in the dev fixture — a real
+        # hash would need the crypto module; a fixed one keeps the shape
+        self.rows.append(
+            {
+                "seq": len(self.rows) + 1,
+                "actor": actor,
+                "tool_name": tool_name,
+                "decision": decision,
+                "rules_matched": rules_matched,
+                "outcome": outcome,
+                "created_at": datetime.now(UTC),
+                "entry_hash": "f" * 64,
+            }
+        )
+        return len(self.rows)
 
     async def verify_chain(self):
         from aether.authz.audit import ChainVerification
@@ -503,7 +535,13 @@ class FakeTraces:
 
 
 class FakeConfigManager:
-    """Just the read surface the panel uses — effective() like the real one."""
+    """The read surface the panel uses (effective() like the real one) plus
+    the small write surface the Contacts page needs — applied to the
+    fixture's live AppConfig in memory, so the page round-trips by hand
+    without Postgres."""
+
+    def __init__(self, config: AppConfig) -> None:
+        self._config = config
 
     async def effective(self) -> dict:
         return {
@@ -524,6 +562,49 @@ class FakeConfigManager:
                 {"path": "agent.personality", "value": "warm and a little informal"},
             ],
         }
+
+    async def set_verdict(
+        self, *, op: str, path: str, value: object = None, source: str = "panel"
+    ) -> tuple[bool, str]:
+        # the contacts vocabulary the panel writes: the default's mode and
+        # list, plus one app's own contacts.<app>.mode / contacts.<app>.allowlist
+        parts = path.split(".")
+        default_section: ContactsConfig | AppContacts = self._config.contacts
+        if len(parts) == 3 and parts[0] == "contacts" and parts[1] in _APPS_WITH_OWN_LISTS:
+            default_section = getattr(self._config.contacts, parts[1])
+            field = parts[2]
+        elif len(parts) == 2 and parts[0] == "contacts":
+            field = parts[1]
+        else:
+            return False, "the dev fixture only speaks the contacts settings"
+        if field == "mode":
+            if op == "reset":
+                # only an app's own switch resets — back to following the default
+                if not isinstance(default_section, AppContacts):
+                    return False, "the default switch can't be reset from here"
+                default_section.mode = None
+            elif str(value) in ("enforce", "off"):
+                default_section.mode = str(value)  # type: ignore[assignment]
+            else:
+                return False, "it must be one of: enforce, off, default"
+        elif field == "allowlist":
+            entries = default_section.allowlist
+            if op == "add":
+                entries.append(ContactRule.model_validate(value))
+            else:
+                gone = ContactRule.model_validate(value)
+                if not any(
+                    r.platform == gone.platform and r.handle == gone.handle for r in entries
+                ):
+                    return False, f"{gone.platform}/{gone.handle} isn't on the allowlist."
+                entries[:] = [
+                    r
+                    for r in entries
+                    if not (r.platform == gone.platform and r.handle == gone.handle)
+                ]
+        else:
+            return False, "the dev fixture only speaks mode and allowlist"
+        return True, "changed in the dev fixture — nothing persists across restarts"
 
 
 class FakeTools:
@@ -594,8 +675,10 @@ def build_app() -> FastAPI:
     if panel_built:
         app.mount("/assets", StaticFiles(directory=WEB_DIR), name="web-assets")
 
-    app.state.settings = Settings(_env_file=None, api_token=API_TOKEN)
-    app.state.config = AppConfig(
+    # _env_file is load-bearing: without it pydantic-settings would read a
+    # real .env sitting next to this fixture. Pyright's stubs miss the param.
+    app.state.settings = Settings(_env_file=None, api_token=API_TOKEN)  # type: ignore[call-arg]
+    config = AppConfig(
         authz=AuthzConfig(
             rules=[
                 AuthzRule(
@@ -609,10 +692,22 @@ def build_app() -> FastAPI:
             discord=PlatformToggle(enabled=False),
             slack=PlatformToggle(enabled=False),
         ),
+        contacts=ContactsConfig(
+            mode="enforce",
+            allowlist=[
+                # platform defaults to "*" — the page renders this as "Any platform"
+                ContactRule(handle="sam@example.com"),
+            ],
+            # one app's own people: gmail's list also decides which inbox
+            # mail the agent may read; telegram's holds its chat contacts
+            gmail=AppContacts(allowlist=[ContactRule(platform="gmail", handle="abc123@xyz.com")]),
+            telegram=AppContacts(allowlist=[ContactRule(platform="telegram", handle="@sam")]),
+        ),
         mcp_servers=[
             MCPServerConfig(name="mail", transport=TransportConfig(type="http", url="https://x"))
         ],
     )
+    app.state.config = config
     approvals = FakeApprovals(now)
     app.state.approvals = approvals
     app.state.audit = FakeAudit(now)
@@ -625,7 +720,7 @@ def build_app() -> FastAPI:
     app.state.entities = FakeEntities(now)
     app.state.scheduler = FakeScheduler(now)
     app.state.traces = FakeTraces(now)
-    app.state.config_manager = FakeConfigManager()
+    app.state.config_manager = FakeConfigManager(config)
     app.state.tools = FakeTools()
     app.state.resolver = FakeResolver()
     app.state.composio = FakeHubBridge()

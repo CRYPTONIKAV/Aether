@@ -627,6 +627,11 @@ class FakeVectorMemory:
         self.backfills += 1
         return None
 
+    # the loop's maintenance cadence also asks for the one-off sealing of
+    # legacy plaintext embeddings — always converged in tests
+    async def encrypt_legacy_chunks(self, batch: int = 500) -> int:
+        return 0
+
     async def search(self, query: str, limit: int = 8, min_similarity: float = 0.35):
         self.queries.append(query)
         return self.hits[:limit]
@@ -707,6 +712,7 @@ class FakeConfigManager:
         set_reply: str = "fake set confirmation",
         effective_payload: dict | None = None,
         yaml_values: dict[str, object] | None = None,
+        verdict: tuple[bool, str] | None = None,
     ) -> None:
         self.show_reply = show_reply
         self.set_reply = set_reply
@@ -719,6 +725,8 @@ class FakeConfigManager:
             }
         )
         self.yaml_values = yaml_values or {}
+        # the scripted set_verdict answer — None means every write lands
+        self.verdict = verdict
         self.show_calls: list[str | None] = []
         self.set_calls: list[dict] = []
 
@@ -732,6 +740,14 @@ class FakeConfigManager:
     async def set(self, *, op: str, path: str, value: object = None, source: str = "chat") -> str:
         self.set_calls.append({"op": op, "path": path, "value": value, "source": source})
         return self.set_reply
+
+    async def set_verdict(
+        self, *, op: str, path: str, value: object = None, source: str = "chat"
+    ) -> tuple[bool, str]:
+        self.set_calls.append({"op": op, "path": path, "value": value, "source": source})
+        if self.verdict is not None:
+            return self.verdict
+        return True, self.set_reply
 
     async def effective(self) -> dict:
         return self.effective_payload

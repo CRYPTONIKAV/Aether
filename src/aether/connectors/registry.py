@@ -17,6 +17,7 @@ from typing import Any, Literal
 
 from ..llm.types import ToolSpec
 from .base import UnknownToolError
+from .mail_allowlist import MailAllowlist
 from .mcp_host import MCPHost
 
 log = logging.getLogger("aether.connectors.registry")
@@ -128,6 +129,7 @@ class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, RegisteredTool] = {}
         self._mcp_host: MCPHost | None = None
+        self._mail_filter: MailAllowlist | None = None
 
     # -- registration ----------------------------------------------------------
 
@@ -142,6 +144,11 @@ class ToolRegistry:
 
     def attach_mcp(self, host: MCPHost) -> None:
         self._mcp_host = host
+
+    def attach_mail_filter(self, mail_filter: MailAllowlist) -> None:
+        """The gmail allowlist rides every mcp result (the model's own
+        calls and approved replays both come through execute)."""
+        self._mail_filter = mail_filter
 
     def sync_mcp_tools(self) -> int:
         """Pull the host's current tool list into the namespace. Idempotent —
@@ -278,7 +285,10 @@ class ToolRegistry:
             return _stringify(await tool.handler(params or {}))
         if self._mcp_host is None:
             raise UnknownToolError(f"mcp tool {name} has no host to route through")
-        return await self._mcp_host.call(name, _gmail_body_breaks(name, params or {}))
+        result = await self._mcp_host.call(name, _gmail_body_breaks(name, params or {}))
+        if self._mail_filter is not None:
+            result = await self._mail_filter.filter_result(name, result)
+        return result
 
 
 def _stringify(result: Any) -> str:

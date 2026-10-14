@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import json
 import secrets
+from typing import Any
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -51,25 +52,35 @@ class Cipher:
             raise CryptoError(f"invalid base64 encryption key: {exc}") from exc
         return cls(raw)
 
-    def encrypt_text(self, plaintext: str, aad: str) -> bytes:
+    def encrypt_bytes(self, plaintext: bytes, aad: str) -> bytes:
+        """Raw bytes in, sealed blob out — the base every other method
+        builds on. Callers with binary payloads (packed vectors) use this
+        directly instead of paying JSON's size penalty."""
         nonce = secrets.token_bytes(NONCE_BYTES)
-        ct = self._aes.encrypt(nonce, plaintext.encode("utf-8"), aad.encode("utf-8"))
+        ct = self._aes.encrypt(nonce, plaintext, aad.encode("utf-8"))
         return nonce + ct
 
-    def decrypt_text(self, blob: bytes, aad: str) -> str:
+    def decrypt_bytes(self, blob: bytes, aad: str) -> bytes:
         if len(blob) <= NONCE_BYTES:
             raise CryptoError("ciphertext too short")
         nonce, ct = blob[:NONCE_BYTES], blob[NONCE_BYTES:]
         try:
-            pt = self._aes.decrypt(nonce, ct, aad.encode("utf-8"))
+            return self._aes.decrypt(nonce, ct, aad.encode("utf-8"))
         except InvalidTag as exc:
             raise CryptoError(
                 f"decryption failed (wrong key, tampered data, or wrong AAD: {aad!r})"
             ) from exc
-        return pt.decode("utf-8")
+
+    def encrypt_text(self, plaintext: str, aad: str) -> bytes:
+        return self.encrypt_bytes(plaintext.encode("utf-8"), aad)
+
+    def decrypt_text(self, blob: bytes, aad: str) -> str:
+        return self.decrypt_bytes(blob, aad).decode("utf-8")
 
     def encrypt_json(self, obj: object, aad: str) -> bytes:
         return self.encrypt_text(json.dumps(obj, ensure_ascii=False, sort_keys=True), aad)
 
-    def decrypt_json(self, blob: bytes, aad: str) -> object:
+    def decrypt_json(self, blob: bytes, aad: str) -> Any:
+        """json.loads — whatever shape was encrypted, as loose as it was
+        stored; the caller knows its section's shape."""
         return json.loads(self.decrypt_text(blob, aad))
