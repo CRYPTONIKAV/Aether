@@ -172,9 +172,19 @@ class ComposioBridge:
         if not await self.ensure():
             raise ComposioNotConfigured(f"no {API_KEY_NAME} set")
         await self._sync_toolkits(extra=toolkit)
-        request = await asyncio.to_thread(self._session.authorize, toolkit)
-        if not request.redirect_url:
-            raise ComposioUnavailable(f"composio gave no connect link for {toolkit}")
+        try:
+            request = await asyncio.to_thread(self._session.authorize, toolkit)
+            if not request.redirect_url:
+                raise ComposioUnavailable(f"composio gave no connect link for {toolkit}")
+        except Exception:
+            # the toolkit was only pre-admitted for this attempt — authorize
+            # failed or gave no link, so drop it back out of the allowlist
+            # rather than leave the session overclaiming a tool with no account
+            try:
+                await self._sync_toolkits()
+            except Exception:
+                log.warning("composio rollback sync failed", exc_info=True)
+            raise
         return request.id, request.redirect_url
 
     async def wait_and_enable(
