@@ -124,6 +124,8 @@ export default function SettingsPage() {
         <p className="mb-3 text-xs text-ink-2">
           What Aether is running with — config.yaml merged with changes made in chat. Read-only
           here; change it from chat with /config, under the same approval gate as everything else.
+          The one exception: the contact list, which the{" "}
+          <a href="#/contacts" className="text-accent underline">Contacts</a> page edits directly.
         </p>
         {hasToken() ? (
           configError ? (

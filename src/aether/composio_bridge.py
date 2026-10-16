@@ -205,10 +205,7 @@ class ComposioBridge:
             # the link was abandoned or failed — drop the toolkit
             # authorize() pre-admitted, or the session keeps listing tools
             # for an app that never connected
-            try:
-                await self._sync_toolkits()
-            except Exception:
-                log.warning("composio rollback sync failed", exc_info=True)
+            await self._rollback_toolkits()
             raise
         await self._sync_toolkits()
         return self._to_app(connection)
@@ -370,6 +367,13 @@ class ComposioBridge:
         await self._secrets.set(_SESSION_ID_NAME, session.session_id)
         await self._secrets.set(MCP_URL_NAME, session.mcp.url)
         await self._secrets.set(MCP_KEY_NAME, key)
+
+    async def _rollback_toolkits(self) -> None:
+        """Drop any un-connected toolkits pre-admitted into the session allowlist."""
+        try:
+            await self._sync_toolkits()
+        except Exception:
+            log.warning("composio rollback sync failed", exc_info=True)
 
     async def _sync_toolkits(self, extra: str | None = None) -> None:
         """The session's allowlist mirrors what's connected — connect grows

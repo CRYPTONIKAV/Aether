@@ -117,6 +117,7 @@ class LoopKit:
         transcript: Any = None,
         attachments: Any = None,
         vectors: Any = None,
+        mail_filter: Any = None,
     ):
         self.tools = ToolRegistry()
         self.events = FakeEventStore()
@@ -152,6 +153,7 @@ class LoopKit:
             transcript=transcript,
             attachments=attachments,
             vectors=vectors,
+            mail_filter=mail_filter,
         )
         if config_manager is not None:
             # the real native config tools, so a /config write goes through
@@ -1395,6 +1397,58 @@ async def test_source_polls_run_ingest_and_audit() -> None:
     # the schedule advanced — an immediate second pass does not re-poll
     await kit.loop._run_due_polls()
     assert len(host.calls) == 1
+
+
+async def test_the_poll_path_filters_gmail_reads_through_the_allowlist() -> None:
+    # the poll calls the host directly, bypassing the registry — the loop's
+    # own mail_filter ref must trim the batch before it is ingested. The
+    # qualified name is the real one the config ships: composio__GMAIL_*
+    import json as _json
+
+    from aether.config import AppContacts, ContactRule, ContactsConfig
+    from aether.connectors.mail_allowlist import MailAllowlist
+
+    contacts = ContactsConfig(
+        mode="enforce",
+        gmail=AppContacts(allowlist=[ContactRule(platform="gmail", handle="abc123@xyz.com")]),
+    )
+    kit = LoopKit(FakeProvider([]), config=AppConfig(contacts=contacts))
+    batch = _json.dumps(
+        {
+            "successful": True,
+            "data": {
+                "messages": [
+                    {"sender": "abc123@xyz.com", "to": "me@example.com", "subject": "keep"},
+                    {"sender": "Newsletter <noreply@digest.example.com>", "subject": "drop"},
+                ]
+            },
+        }
+    )
+    poll_tool = PollTool(tool="GMAIL_FETCH_EMAILS", args={}, every_minutes=5.0)
+    calls: list[tuple[str, dict]] = []
+
+    async def gmail_call(qualified: str, args: dict) -> str:
+        calls.append((qualified, dict(args)))
+        return batch
+
+    kit.loop._host = SimpleNamespace(
+        connections=[SimpleNamespace(name="composio", poll_tools=[poll_tool])],
+        call=gmail_call,
+    )
+    kit.loop._poll_targets["composio:GMAIL_FETCH_EMAILS:0"] = ("composio", poll_tool)
+    kit.loop._next_poll["composio:GMAIL_FETCH_EMAILS:0"] = datetime.now(UTC)
+    kit.loop._mail_filter = MailAllowlist(contacts, kit.audit)
+
+    await kit.loop._run_due_polls()
+    assert calls == [("composio__GMAIL_FETCH_EMAILS", {})]
+    ingested = kit.events.ingested[-1]
+    kept = _json.loads(ingested["payload"]["result"])["data"]["messages"]
+    assert [m["subject"] for m in kept] == ["keep"]
+    # the drop left its count-only trace on the audit chain
+    assert any(
+        e["decision"] == "filtered" and e["params"].get("messages_dropped") == 1
+        for e in kit.audit.entries
+    )
 
 
 async def test_the_watchdog_announces_a_dead_connector_once_and_its_recovery() -> None:

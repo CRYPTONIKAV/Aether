@@ -16,6 +16,7 @@ import TasksPage from "./pages/Tasks.jsx";
 import MemoryPage from "./pages/Memory.jsx";
 import PolicyPage from "./pages/Policy.jsx";
 import AppsPage from "./pages/Apps.jsx";
+import ContactsPage from "./pages/Contacts.jsx";
 
 const COLLAPSE_KEY = "aether_sidebar_collapsed";
 
@@ -28,6 +29,7 @@ const PAGES = {
   traces: { title: "Decision Traces", el: TracesPage },
   policy: { title: "Authorization & Policies", el: PolicyPage },
   apps: { title: "Apps & Permissions", el: AppsPage },
+  contacts: { title: "Contacts", el: ContactsPage },
   settings: { title: "Settings", el: SettingsPage },
 };
 

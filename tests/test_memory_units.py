@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from fakes import FakeEventStore, FakeJudge, FakeProvider
 
-from aether.config import ContactRule, ContactsConfig, SalienceConfig
+from aether.config import AppContacts, ContactRule, ContactsConfig, SalienceConfig
 from aether.llm.json_utils import JsonParseError, extract_json
 from aether.llm.types import Turn
 from aether.memory.context import apply_daily_cap, bound_events, collect_senders
@@ -73,14 +73,20 @@ def _contacts(mode: str, *rules: dict) -> ContactsConfig:
     return ContactsConfig(mode=mode, allowlist=[ContactRule(**r) for r in rules])
 
 
+def _seen(contacts: ContactsConfig, sender: Sender | None) -> bool:
+    """The ingestion question: is this sender allowlisted where they arrived?
+    The app key is the sender's own platform."""
+    return is_allowlisted(contacts, sender.platform if sender else "", sender)
+
+
 def test_allowlist_mode_off_sees_everything() -> None:
     contacts = _contacts("off")
-    assert is_allowlisted(contacts, Sender("telegram", "@stranger")) is True
+    assert _seen(contacts, Sender("telegram", "@stranger")) is True
 
 
 def test_allowlist_senderless_events_pass() -> None:
     contacts = _contacts("enforce", {"platform": "telegram", "handle": "@vedant"})
-    assert is_allowlisted(contacts, None) is True
+    assert is_allowlisted(contacts, "telegram", None) is True
 
 
 def test_allowlist_matches_platform_rules_and_star_rules() -> None:
@@ -89,24 +95,49 @@ def test_allowlist_matches_platform_rules_and_star_rules() -> None:
         {"platform": "telegram", "handle": "@vedant"},
         {"platform": "*", "handle": "friend@example.com"},
     )
-    assert is_allowlisted(contacts, Sender("telegram", "@vedant")) is True
-    assert is_allowlisted(contacts, Sender("gmail", "friend@example.com")) is True  # * email rule
-    assert (
-        is_allowlisted(contacts, Sender("outlook", "Friend@Example.com")) is True
-    )  # normalized match
-    assert is_allowlisted(contacts, Sender("telegram", "@rando")) is False
+    assert _seen(contacts, Sender("telegram", "@vedant")) is True
+    assert _seen(contacts, Sender("gmail", "friend@example.com")) is True  # * email rule
+    assert _seen(contacts, Sender("outlook", "Friend@Example.com")) is True  # normalized match
+    assert _seen(contacts, Sender("telegram", "@rando")) is False
 
 
 def test_allowlist_star_rule_matches_bare_handles_across_platforms() -> None:
     contacts = _contacts("enforce", {"platform": "*", "handle": "@vedant"})
-    assert is_allowlisted(contacts, Sender("discord", "@vedant")) is True
-    assert is_allowlisted(contacts, Sender("discord", "@not-vedant")) is False
+    assert _seen(contacts, Sender("discord", "@vedant")) is True
+    assert _seen(contacts, Sender("discord", "@not-vedant")) is False
 
 
 def test_allowlist_phone_rule() -> None:
     contacts = _contacts("enforce", {"platform": "phone", "handle": "+15550101234"})
-    assert is_allowlisted(contacts, Sender("sms", "5550101234")) is True
-    assert is_allowlisted(contacts, Sender("sms", "5559999999")) is False
+    assert _seen(contacts, Sender("sms", "5550101234")) is True
+    assert _seen(contacts, Sender("sms", "5559999999")) is False
+
+
+def test_per_app_list_only_counts_on_its_app() -> None:
+    # gmail's own people never open discord — the app key picks the slice
+    contacts = ContactsConfig(
+        mode="enforce",
+        gmail=AppContacts(allowlist=[ContactRule(platform="gmail", handle="friend@example.com")]),
+    )
+    assert is_allowlisted(contacts, "gmail", Sender("email", "friend@example.com")) is True
+    assert is_allowlisted(contacts, "discord", Sender("discord", "@friend")) is False
+
+
+def test_per_app_switch_overrides_the_default() -> None:
+    # the default says enforce; discord's own switch lets everyone in
+    contacts = ContactsConfig(mode="enforce", discord=AppContacts(mode="off"))
+    assert is_allowlisted(contacts, "discord", Sender("discord", "@stranger")) is True
+    assert is_allowlisted(contacts, "telegram", Sender("telegram", "@stranger")) is False
+    # and the mirror: default off, one app enforcing its own list
+    enforcing = ContactsConfig(
+        mode="off",
+        telegram=AppContacts(
+            mode="enforce", allowlist=[ContactRule(platform="telegram", handle="@sam")]
+        ),
+    )
+    assert is_allowlisted(enforcing, "telegram", Sender("telegram", "@sam")) is True
+    assert is_allowlisted(enforcing, "telegram", Sender("telegram", "@stranger")) is False
+    assert is_allowlisted(enforcing, "discord", Sender("discord", "@stranger")) is True
 
 
 def test_content_hash_is_canonical_and_kind_bound() -> None:

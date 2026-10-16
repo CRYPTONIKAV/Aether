@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
-import pytest
+import json
 
+import pytest
+from fakes import FakeAudit
+
+from aether.config import AppContacts, ContactRule, ContactsConfig
 from aether.connectors.base import UnknownToolError
+from aether.connectors.mail_allowlist import MailAllowlist
 from aether.connectors.registry import RegisteredTool, ToolRegistry
 from aether.llm.types import ToolSpec
 
@@ -87,6 +92,65 @@ async def test_unknown_tools_do_not_execute() -> None:
     registry = ToolRegistry()
     with pytest.raises(UnknownToolError):
         await registry.execute("ghost", {})
+
+
+# -- the mail filter rides every mcp result ---------------------------------------
+
+
+class GmailHost(FakeHost):
+    """MCPHost double that answers gmail calls with a canned batch."""
+
+    def __init__(self, batch: str) -> None:
+        super().__init__(
+            [ToolSpec(name="composio__GMAIL_FETCH_EMAILS", description="mail", source="composio")]
+        )
+        self.batch = batch
+
+    async def call(self, name: str, args: dict) -> str:
+        self.calls.append((name, args))
+        return self.batch
+
+
+async def test_attached_mail_filter_trims_mcp_gmail_results() -> None:
+    # execute is the one dispatch point for the model's own calls and
+    # approved replays — the filter must ride it, not sit beside it
+    batch = json.dumps(
+        {
+            "successful": True,
+            "data": {
+                "messages": [
+                    {"sender": "abc123@xyz.com", "to": "me@example.com", "subject": "keep"},
+                    {
+                        "sender": "Newsletter <noreply@digest.example.com>",
+                        "to": "me@example.com",
+                        "subject": "drop",
+                    },
+                ]
+            },
+        }
+    )
+    registry = ToolRegistry()
+    contacts = ContactsConfig(
+        mode="enforce",
+        gmail=AppContacts(allowlist=[ContactRule(platform="gmail", handle="abc123@xyz.com")]),
+    )
+    registry.attach_mcp(GmailHost(batch))
+    registry.attach_mail_filter(MailAllowlist(contacts, FakeAudit()))
+    registry.sync_mcp_tools()
+
+    out = json.loads(await registry.execute("composio__GMAIL_FETCH_EMAILS", {}))
+    assert [m["subject"] for m in out["data"]["messages"]] == ["keep"]
+
+
+async def test_no_filter_attached_leaves_results_untouched() -> None:
+    batch = json.dumps(
+        {"successful": True, "data": {"messages": [{"sender": "anyone@example.com"}]}}
+    )
+    registry = ToolRegistry()
+    registry.attach_mcp(GmailHost(batch))
+    registry.sync_mcp_tools()
+    out = json.loads(await registry.execute("composio__GMAIL_FETCH_EMAILS", {}))
+    assert len(out["data"]["messages"]) == 1
 
 
 async def test_mcp_tool_without_host_is_an_error() -> None:

@@ -91,8 +91,11 @@ flowchart TD
 - **Tamper-evident audit.** Every decision produces a hash-chained record.
   Secrets are never written to it: it names keys only.
 - **Your contacts, your rules.** An explicit allowlist decides which
-  contacts the agent may see on every channel. Non-allowlisted senders are
-  dropped at ingestion and their content is never stored.
+  contacts the agent may see on every channel — one list and one switch
+  per connected app, plus a list that counts everywhere. Non-allowlisted
+  senders are dropped at ingestion, and bulk reads (like the inbox) are
+  filtered the same way before the agent ever sees them; their content is
+  never stored.
 
 ### Memory & understanding
 

@@ -46,6 +46,7 @@ from ..connectors.base import (
     MessagingConnector,
     UnknownToolError,
 )
+from ..connectors.mail_allowlist import MailAllowlist
 from ..connectors.mcp_host import MCPHost
 from ..connectors.registry import ToolRegistry
 from ..llm.agent import run_tool_loop
@@ -358,6 +359,7 @@ class AgentLoop:
         transcript: Any = None,
         attachments: AttachmentProcessor | None = None,
         vectors: VectorMemory | None = None,
+        mail_filter: MailAllowlist | None = None,
     ) -> None:
         self._providers = providers
         self._tools = tools
@@ -391,6 +393,9 @@ class AgentLoop:
         # is semantic and automatic; a missing embedder means no recall,
         # and memory_search says the plain failure message
         self._vectors = vectors
+        # the gmail allowlist, filtering bulk reads the poll path takes
+        # straight off the host — bypassing the registry's choke point
+        self._mail_filter = mail_filter
         # the guided /config walk in progress, if any — memory only
         self._wizard: ConfigWizard | None = None
         # the guided /apps walk in progress, if any — same rules, memory only
@@ -457,15 +462,22 @@ class AgentLoop:
         """Index the events that predate vector memory (or lost a race with
         a rate limit), 50 oldest at a time: tight passes while history is
         draining, a minute's rest once caught up. A failed pass just
-        retries — indexed_at is the ledger, so nothing is ever lost."""
+        retries — indexed_at is the ledger, so nothing is ever lost. The
+        same cadence also drains the one-off job of sealing legacy
+        plaintext embeddings — both converge to no-op."""
         assert self._vectors is not None
         while self._running:
+            try:
+                legacy = await self._vectors.encrypt_legacy_chunks(500)
+            except Exception:
+                log.exception("legacy embedding encryption pass failed — retrying later")
+                legacy = 0
             try:
                 handled = await self._vectors.backfill(50)
             except Exception:
                 log.exception("vector backfill pass failed — pausing before the retry")
                 handled = None
-            await asyncio.sleep(1 if handled else 60)
+            await asyncio.sleep(1 if (legacy or handled) else 60)
 
     def notify(self) -> None:
         """Wake the loop early — used after screen captures, poll results,
@@ -1066,6 +1078,10 @@ class AgentLoop:
             if server in self._down:
                 self._down.discard(server)
                 await self._notify(f"{server} is responding again.")
+            # the poll path calls the host directly — the registry's mail
+            # filter never sees it — so the same allowlist rides here
+            if self._mail_filter is not None:
+                result = await self._mail_filter.filter_result(qualified, result)
             await self._audit.append(
                 actor="scheduler",
                 tool_name=qualified,
