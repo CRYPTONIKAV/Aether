@@ -177,10 +177,13 @@ class ComposioBridge:
             if not request.redirect_url:
                 raise ComposioUnavailable(f"composio gave no connect link for {toolkit}")
         except Exception:
-            # session.authorize failed or returned no link — drop the toolkit
-            # authorize() pre-admitted, or the session keeps listing tools
-            # for an app that never connected
-            await self._rollback_toolkits()
+            # the toolkit was only pre-admitted for this attempt — authorize
+            # failed or gave no link, so drop it back out of the allowlist
+            # rather than leave the session overclaiming a tool with no account
+            try:
+                await self._sync_toolkits()
+            except Exception:
+                log.warning("composio rollback sync failed", exc_info=True)
             raise
         return request.id, request.redirect_url
 
