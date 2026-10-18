@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     openai_api_key: str = ""
     gemini_api_key: str = ""
+    nvidia_api_key: str = ""
+    nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
     ollama_base_url: str = "http://localhost:11434/v1"
 
     # Messaging connectors
@@ -64,7 +66,7 @@ class Settings(BaseSettings):
 
 
 class LLMConfig(BaseModel):
-    provider: Literal["anthropic", "openai", "gemini", "ollama"] = "anthropic"
+    provider: Literal["anthropic", "openai", "gemini", "ollama", "nvidia_nim"] = "anthropic"
     model: str = "claude-opus-5"
     vision_model: str | None = None
     salience_model: str | None = None

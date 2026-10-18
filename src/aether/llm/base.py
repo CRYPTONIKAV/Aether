@@ -20,7 +20,7 @@ class Provider(Protocol):
     The manual tool-use loop in `agent.py` drives it.
     """
 
-    name: str  # "anthropic" | "openai" | "gemini" | "ollama" | "fake"
+    name: str  # "anthropic" | "openai" | "gemini" | "nvidia_nim" | "ollama" | "fake"
     model: str  # concrete model id sent to the API
     supports_tools: bool
     supports_vision: bool

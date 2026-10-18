@@ -13,6 +13,7 @@ from ..config import LLMConfig, Settings
 from .anthropic_provider import AnthropicProvider
 from .base import Provider, ProviderError
 from .gemini_provider import GeminiProvider
+from .nvidia_provider import NvidiaNimProvider
 from .ollama_provider import OllamaProvider
 from .openai_provider import OpenAIProvider
 
@@ -26,6 +27,10 @@ def _build(settings: Settings, llm: LLMConfig, model: str, vision_capable: bool)
         return OpenAIProvider.build(settings.openai_api_key, model, llm.max_tokens)
     if llm.provider == "gemini":
         return GeminiProvider.build(settings.gemini_api_key, model, llm.max_tokens)
+    if llm.provider == "nvidia_nim":
+        return NvidiaNimProvider.build(
+            settings.nvidia_api_key, model, llm.max_tokens, settings.nvidia_base_url
+        )
     if llm.provider == "ollama":
         return OllamaProvider.build(
             settings.ollama_base_url, model, llm.max_tokens, supports_vision=vision_capable

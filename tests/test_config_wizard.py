@@ -149,10 +149,18 @@ async def test_provider_is_a_numbered_choice() -> None:
     assert question == (
         "who should make me think? (currently anthropic — heads-up: "
         "llm changes restart me, back in a few seconds)\n"
-        "1 — anthropic\n2 — openai\n3 — gemini\n4 — ollama"
+        "1 — anthropic\n2 — openai\n3 — gemini\n4 — ollama\n5 — nvidia_nim"
     )
     await _say(wizard, "3")
     assert applier.calls == [("set", "llm.provider", "gemini")]
+
+
+async def test_nvidia_nim_is_selectable_as_a_provider() -> None:
+    wizard, applier, _ = _wizard()
+    _, _, question = await _say(wizard, "2", "1", "1")
+    assert "5 — nvidia_nim" in question
+    await _say(wizard, "5")
+    assert applier.calls == [("set", "llm.provider", "nvidia_nim")]
 
 
 async def test_a_security_shaped_answer_relays_the_park_card_verbatim() -> None:
